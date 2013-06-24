@@ -176,3 +176,13 @@ else
 endif
 
 THIRD_PARTY = $(TOP)/../../3rdparty
+
+# Select "fromdos" for Ubuntu,
+# or "dos2unix" for RedHat.
+FROMDOS = $(shell which fromdos || which dos2unix)
+ifeq ("$(FROMDOS)", "")
+    $(warning No text conversion utility found.   This build should not be used to create a kit.)
+    # Set FROMDOS to be a no-op so it can continue anyway.
+    # Most of the time, we don't care.
+    FROMDOS=echo
+endif

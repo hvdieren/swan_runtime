@@ -29,13 +29,22 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 AUTOMAKE_OPTIONS = foreign
-ACLOCAL_AMFLAGS = -I ..
+
+# Use when building GCC
+#ACLOCAL_AMFLAGS = -I ..
+
+# Use when just building the Intel Cilk Plus runtime
+ACLOCAL_AMFLAGS = -I m4
 
 # Compiler and linker flags.
 GENERAL_FLAGS = -I$(top_srcdir)/include -DIN_CILK_RUNTIME=1
 GENERAL_FLAGS += -fpic -O3
 GENERAL_FLAGS += -DBUILD_USER=\"$(USER)\"
 GENERAL_FLAGS += -DBUILD_HOST=\"`hostname`\"
+
+# Enable Intel Cilk Plus extension
+GENERAL_FLAGS += -fcilkplus
+
 AM_CFLAGS = $(GENERAL_FLAGS) -std=c99
 AM_CPPFLAGS = $(GENERAL_FLAGS)
 AM_LDFLAGS = -lpthread -ldl
@@ -59,6 +68,9 @@ include include/internal/rev.mk
 libcilkrts_la_LDFLAGS  = -rpath '$(libdir)'
 libcilkrts_la_LDFLAGS += -version-info 5:$(CILK_REVISION):0
 libcilkrts_la_LDFLAGS += -lpthread -ldl
+
+# Hack for Cygwin
+libcilkrts_la_LDFLAGS += -no-undefined
 
 # C/C++ header files for Cilk.
 cilkincludedir = $(includedir)/cilk

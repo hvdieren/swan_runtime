@@ -1,6 +1,6 @@
 #########################################################################
 #
-# Copyright (C) 2011 , Intel Corporation
+# Copyright (C) 2011-2012 , Intel Corporation
 # All rights reserved.
 # 
 # Redistribution and use in source and binary forms, with or without
@@ -31,4 +31,4 @@
 # POSSIBILITY OF SUCH DAMAGE.
 ###########################################################################
 
-CILK_REVISION = 2546
+CILK_REVISION = 2856

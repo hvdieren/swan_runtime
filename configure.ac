@@ -31,6 +31,9 @@
 AC_INIT([Cilk Runtime], [2.0], [cilk@intel.com])
 AC_PREREQ([2.67])
 AM_INIT_AUTOMAKE([1.11 no-define])
+
+# Build a DLL on Windows
+AC_LIBTOOL_WIN32_DLL
 AC_PROG_CXX
 AC_PROG_CC
 AC_PROG_LIBTOOL
