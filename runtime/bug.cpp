@@ -41,6 +41,7 @@
 #include <stdlib.h>
 #ifdef _WIN32
 #   include "windows-clean.h"
+#   include "internal/abi.h"
 #   include "cilktools/cilkscreen.h"
 #   include <crtdbg.h>
 #endif

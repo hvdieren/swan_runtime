@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009-2010 , Intel Corporation
+ * Copyright (C) 2009-2011 , Intel Corporation
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -49,9 +49,11 @@ __CILKRTS_BEGIN_EXTERN_C
 /*
  * __cilkrts_synched
  *
- * Allows an application to determine if there are any outstanding
- * children at this instant.  This function will examine the current
- * full frame to determine this.
+ * Allows an application to determine if there are any outstanding children at
+ * this instant. This function will examine the current full frame to
+ * determine this. This function will return a valid result only when called
+ * within a spawn continuation, within the stack frame of the continuation
+ * itself.
  */
 
 CILK_EXPORT __CILKRTS_NOTHROW
@@ -77,10 +79,18 @@ void __cilkrts_cilkscreen_puts(const char *);
 CILK_EXPORT __CILKRTS_NOTHROW
 void *__cilkrts_get_sf(void);
 
-struct __cilkrts_worker;
-
+/**
+ * Returns the size of stacks created by Cilk.
+ */
 CILK_EXPORT __CILKRTS_NOTHROW
-void __cilkrts_init_worker_sysdep(struct __cilkrts_worker *w);
+size_t __cilkrts_get_stack_size(void);
+
+/** 
+ * Dumps runtime statistics to stderr.
+ * Undocumented API for debugging. 
+ */
+CILK_EXPORT __CILKRTS_NOTHROW
+void __cilkrts_dump_stats(void);
 
 CILK_EXPORT __CILKRTS_NOTHROW
 int __cilkrts_irml_version(void);
@@ -108,6 +118,7 @@ __CILKRTS_END_EXTERN_C
 
 /* Stubs for the api functions */
 
+#define __cilkrts_get_stack_size() (0)
 #define __cilkrts_synched() (1)
 
 #endif /* CILK_STUB */

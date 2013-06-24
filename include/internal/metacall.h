@@ -1,7 +1,7 @@
 // -*- C++ -*-
 
 /*
- * Copyright (C) 2009-2010 , Intel Corporation
+ * Copyright (C) 2009-2011 , Intel Corporation
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without

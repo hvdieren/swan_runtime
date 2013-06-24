@@ -40,10 +40,12 @@
  * abbreviations instead of using CILK_API(ret) directly, etags and other
  * tools can more easily recognize function signatures.
  */
-#define CILK_API_VOID        CILK_API(void)
-#define CILK_API_VOID_PTR    CILK_API(void*)
-#define CILK_API_INT         CILK_API(int)
-#define CILK_API_TBB_RETCODE CILK_API(__cilk_tbb_retcode)
+#define CILK_API_VOID          CILK_API(void)
+#define CILK_API_VOID_PTR      CILK_API(void*)
+#define CILK_API_INT           CILK_API(int)
+#define CILK_API_SIZET         CILK_API(size_t)
+#define CILK_API_TBB_RETCODE   CILK_API(__cilk_tbb_retcode)
+#define CILK_API_PEDIGREE      CILK_API(__cilkrts_pedigree) 
 
 /* Abbreviations ABI functions returning different types.  By using these
  * abbreviations instead of using CILK_ABI(ret) directly, etags and other
@@ -55,9 +57,9 @@
 
 /* documentation aid to identify portable vs. nonportable
    parts of the runtime.  See README for definitions. */
-#define COMMON_PORTABLE extern
-#define COMMON_SYSDEP extern
-#define NON_COMMON extern
+#define COMMON_PORTABLE
+#define COMMON_SYSDEP
+#define NON_COMMON
 
 #if !(defined __GNUC__ || defined __ICC)
 #   define __builtin_expect(a_, b_) a_
@@ -93,5 +95,10 @@
 #   error define inline
 #   define inline __inline
 #endif
+
+/* Compilers that build the Cilk runtime are assumed to know about
+   zero-cost intrinsics.  For those that don't, comment out the
+   following definition: */
+#define ENABLE_NOTIFY_ZC_INTRINSIC
 
 #endif // ! defined(INCLUDED_RTS_COMMON_DOT_H)

@@ -2,7 +2,7 @@
  *
  *************************************************************************
  *
- * Copyright (C) 2010 , Intel Corporation
+ * Copyright (C) 2010-2011 , Intel Corporation
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -41,15 +41,15 @@
 void run_scheduling_stack_fcn(__cilkrts_worker *w)
 {
     scheduling_stack_fcn_t fcn = w->l->post_suspend;
-    full_frame *f2 = w->l->frame;
+    full_frame *ff2 = w->l->frame_ff;
     __cilkrts_stack_frame *sf2 = w->l->suspended_stack;
 
     w->l->post_suspend = 0;
     w->l->suspended_stack = 0;
     CILK_ASSERT(fcn);
-    CILK_ASSERT(f2);
+    CILK_ASSERT(ff2);
 
-    fcn(w, f2, sf2);
+    fcn(w, ff2, sf2);
 }
 
 /* End local_state.c */

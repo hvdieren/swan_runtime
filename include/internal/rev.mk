@@ -31,4 +31,4 @@
 # POSSIBILITY OF SUCH DAMAGE.
 ###########################################################################
 
-CILK_REVISION = 1857
+CILK_REVISION = 2546

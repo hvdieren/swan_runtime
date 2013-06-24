@@ -42,6 +42,7 @@
 
 #include "os.h"
 #include "bug.h"
+#include "cilk_malloc.h"
 #include <internal/abi.h>
 
 #if defined __linux__
@@ -65,6 +66,7 @@
 #include <sys/types.h>
 
 
+
 // /* Thread-local storage */
 // #ifdef _WIN32
 // typedef unsigned cilkos_tls_key_t;
@@ -77,8 +79,25 @@
 
 #if !defined CILK_WORKER_TLS
 static int cilk_keys_defined;
-static pthread_key_t worker_key, reducer_key, tbb_interop_key;
+static pthread_key_t worker_key, reducer_key, tbb_interop_key, pedigree_leaf_key;
 static void *serial_worker;
+
+
+// This destructor is called when a pthread dies to deallocate the
+// pedigree node.
+static void __cilkrts_pedigree_leaf_destructor(void* pedigree_tls_ptr)
+{
+    __cilkrts_pedigree* pedigree_tls
+	= (__cilkrts_pedigree*)pedigree_tls_ptr;
+    if (pedigree_tls) {
+        // Assert that we have either one or two nodes
+        // left in the pedigree chain.
+        // If we have more, then something is going wrong...
+        CILK_ASSERT((!pedigree_tls->parent) ||
+                    (pedigree_tls->parent && (!pedigree_tls->parent->parent)));
+	__cilkrts_free(pedigree_tls);
+    }
+}
 
 void __cilkrts_init_tls_variables(void)
 {
@@ -94,6 +113,9 @@ void __cilkrts_init_tls_variables(void)
     CILK_ASSERT (status == 0);
     status = pthread_key_create(&tbb_interop_key, 0);
     CILK_ASSERT (status == 0);
+    status = pthread_key_create(&pedigree_leaf_key,
+				__cilkrts_pedigree_leaf_destructor);
+    CILK_ASSERT (status == 0);
     cilk_keys_defined = 1;
     return;
 }
@@ -102,8 +124,9 @@ CILK_ABI_WORKER_PTR __cilkrts_get_tls_worker()
 {
     if (__builtin_expect(cilk_keys_defined, 1))
         return (__cilkrts_worker *)pthread_getspecific(worker_key);
-    else
+    else 
         return serial_worker;
+    
 }
 
 CILK_ABI_WORKER_PTR __cilkrts_get_tls_worker_fast()
@@ -127,6 +150,47 @@ __cilk_tbb_stack_op_thunk *__cilkrts_get_tls_tbb_interop(void)
             pthread_getspecific(tbb_interop_key);
     else
         return 0;
+}
+
+// This counter should be updated atomically.
+static int __cilkrts_global_pedigree_tls_counter = -1;
+
+COMMON_SYSDEP
+__cilkrts_pedigree *__cilkrts_get_tls_pedigree_leaf(int create_new)
+{
+    __cilkrts_pedigree *pedigree_tls;    
+    if (__builtin_expect(cilk_keys_defined, 1)) {
+        pedigree_tls =
+            (struct __cilkrts_pedigree *)pthread_getspecific(pedigree_leaf_key);
+    }
+    else {
+        return 0;
+    }
+    
+    if (!pedigree_tls && create_new) {
+        // This call creates two nodes, X and Y.
+        // X == pedigree_tls[0] is the leaf node, which gets copied
+        // in and out of a user worker w when w binds and unbinds.
+        // Y == pedigree_tls[1] is the root node,
+        // which is a constant node that represents the user worker
+        // thread w.
+	pedigree_tls = (__cilkrts_pedigree*)
+	    __cilkrts_malloc(2 * sizeof(__cilkrts_pedigree));
+
+        // This call sets the TLS pointer to the new node.
+	__cilkrts_set_tls_pedigree_leaf(pedigree_tls);
+        
+        pedigree_tls[0].rank = 0;
+        pedigree_tls[0].parent = &pedigree_tls[1];
+
+        // Create Y, whose rank begins as the global counter value.
+        pedigree_tls[1].rank =
+            __sync_add_and_fetch(&__cilkrts_global_pedigree_tls_counter, 1);
+
+        pedigree_tls[1].parent = NULL;
+        CILK_ASSERT(pedigree_tls[1].rank != -1);
+    }
+    return pedigree_tls;
 }
 
 COMMON_SYSDEP
@@ -166,6 +230,20 @@ void __cilkrts_set_tls_tbb_interop(__cilk_tbb_stack_op_thunk *t)
     }
     abort();
 }
+
+
+COMMON_SYSDEP
+void __cilkrts_set_tls_pedigree_leaf(__cilkrts_pedigree* pedigree_leaf)
+{
+    if (__builtin_expect(cilk_keys_defined, 1)) {
+        int status;
+        status = pthread_setspecific(pedigree_leaf_key, pedigree_leaf);
+        CILK_ASSERT (status == 0);
+        return;
+    }
+    abort();
+}
+
 #else
 void __cilkrts_init_tls_variables(void)
 {
@@ -303,8 +381,19 @@ COMMON_SYSDEP void __cilkrts_sleep(void)
 COMMON_SYSDEP void __cilkrts_yield(void)
 {
 #if __APPLE__ || __FreeBSD__
+    // On MacOS, call sched_yield to yield quantum.  I'm not sure why we
+    // don't do this on Linux also.
     sched_yield();
+#elif defined(__MIC__)
+    // On MIC, pthread_yield() really trashes things.  Arch's measurements
+    // showed that calling _mm_delay_32() (or doing nothing) was a better
+    // option.  Delaying 1024 clock cycles is a reasonable compromise between
+    // giving up the processor and latency starting up when work becomes
+    // available
+    _mm_delay_32(1024);
 #else
+    // On Linux, call pthread_yield (which in turn will call sched_yield)
+    // to yield quantum.
     pthread_yield();
 #endif
 }
@@ -367,6 +456,34 @@ static void __attribute__((constructor)) init_once()
 {
     /*__cilkrts_debugger_notification_internal(CILK_DB_RUNTIME_LOADED);*/
     __cilkrts_init_tls_variables();
+}
+
+
+#define PAGE 4096
+#define CILK_MIN_STACK_SIZE (4*PAGE)
+// Default size for the stacks that we create in Cilk for Unix.
+#define CILK_DEFAULT_STACK_SIZE 0x100000
+
+/*
+ * Convert the user's specified stack size into a "reasonable" value
+ * for this OS.
+ */
+size_t cilkos_validate_stack_size(size_t specified_stack_size) {
+    // Convert any negative value to the default.
+    if (specified_stack_size == 0) {
+        CILK_ASSERT((CILK_DEFAULT_STACK_SIZE % PAGE) == 0);
+        return CILK_DEFAULT_STACK_SIZE;
+    }
+    // Round values in between 0 and CILK_MIN_STACK_SIZE up to
+    // CILK_MIN_STACK_SIZE.
+    if (specified_stack_size <= CILK_MIN_STACK_SIZE) {
+        return CILK_MIN_STACK_SIZE;
+    }
+    if ((specified_stack_size % PAGE) > 0) {
+        // Round the user's stack size value up to nearest page boundary.
+        return (PAGE * (1 + specified_stack_size / PAGE));
+    }
+    return specified_stack_size;
 }
 
 /* End os-unix.c */

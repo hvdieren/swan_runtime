@@ -30,9 +30,14 @@
 
 __cilkrts_bind_thread
 __cilkrts_bind_thread_1
+__cilkrts_bump_loop_rank
+__cilkrts_bump_loop_rank_internal
 __cilkrts_bump_worker_rank
+__cilkrts_bump_worker_rank_internal
 __cilkrts_cilk_for_32
 __cilkrts_cilk_for_64
+__cilkrts_debugger_notification
+__cilkrts_dump_stats
 __cilkrts_end_cilk
 __cilkrts_enter_frame
 __cilkrts_enter_frame_1
@@ -41,9 +46,11 @@ __cilkrts_enter_frame_fast_1
 __cilkrts_get_force_reduce
 __cilkrts_get_nworkers
 __cilkrts_get_pedigree_info
+__cilkrts_get_pedigree_internal
 __cilkrts_get_sf
 __cilkrts_get_stack_region_id
 __cilkrts_get_stack_region_properties
+__cilkrts_get_stack_size
 __cilkrts_get_tls_worker
 __cilkrts_get_tls_worker_fast
 __cilkrts_get_total_workers
@@ -57,7 +64,7 @@ __cilkrts_hyperobject_alloc
 __cilkrts_hyperobject_dealloc
 __cilkrts_hyperobject_noop_destroy
 __cilkrts_init
-__cilkrts_init_worker_sysdep
+# __cilkrts_init_worker_sysdep
 __cilkrts_irml_version
 __cilkrts_leave_frame
 __cilkrts_metacall
