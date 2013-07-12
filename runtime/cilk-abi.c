@@ -487,7 +487,7 @@ CILK_ABI_WORKER_PTR BIND_THREAD_RTN(void)
  *
  * For Windows, the aliased symbol is exported in cilk-exports.def.
  */
-#ifdef _DARWIN_C_SOURCE
+#if defined(_DARWIN_C_SOURCE) || defined(__APPLE__)
 /**
  * Mac OS X: Unfortunately, Darwin doesn't allow aliasing, so we just make a
  * call and hope the optimizer does the right thing.
@@ -516,7 +516,7 @@ CILK_ABI_WORKER_PTR __cilkrts_bind_thread (void) {
 CILK_ABI_WORKER_PTR __cilkrts_bind_thread(void)
     ALIASED_NAME(BIND_THREAD_RTN);
 
-#endif // defined _DARWIN_C_SOURCE
+#endif // defined _DARWIN_C_SOURCE || defined __APPLE__
 #endif // !defined _MSC_VER
 
 CILK_API_SIZET

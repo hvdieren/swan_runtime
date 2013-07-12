@@ -372,6 +372,9 @@ extern "C" {
 CILK_ABI_THROWS_VOID __cilkrts_cilk_for_32(__cilk_abi_f32_t body, void *data,
                                             cilk32_t count, int grain)
 {
+    // Cilkscreen should not report this call in a stack trace
+    __notify_zc_intrinsic((char *)"cilkscreen_hide_call", 0);
+
     // Check for an empty range here as an optimization - don't need to do any
     // __cilkrts_stack_frame initialization
     if (count > 0)

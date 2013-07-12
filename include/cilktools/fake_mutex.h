@@ -3,7 +3,7 @@
  *************************************************************************
  *
  * @copyright
- * Copyright (C) 2011, Intel Corporation
+ * Copyright (C) 2013, Intel Corporation
  * All rights reserved.
  * 
  * @copyright
@@ -50,46 +50,42 @@
 
 #include <cilktools/cilkscreen.h>
 
-// If this is Windows, specify the linkage
-#ifdef _WIN32
-#define CILKSCREEN_CDECL __cdecl
-#else
-#define CILKSCREEN_CDECL
-#endif // _WIN32
-
 namespace cilkscreen
 {
     class fake_mutex
     {
     public:
+	fake_mutex() : locked(false)
+	{
+	}
+
+	~fake_mutex()
+	{
+	    __CILKRTS_ASSERT(! locked);
+	}
 
         // Wait until mutex is available, then enter
-        virtual void lock()
+        void lock()
         {
-            __cilkscreen_acquire_lock(&lock_val);
+            __cilkscreen_acquire_lock(&locked);
+	    __CILKRTS_ASSERT(! locked);
+	    locked = true;
         }
 
         // A fake mutex is always available
-        virtual bool try_lock() { lock(); return true; }
+        bool try_lock() { lock(); return true; }
 
         // Releases the mutex
-        virtual void unlock()
+        void unlock()
         {
-            __cilkscreen_release_lock(&lock_val);
+	    __CILKRTS_ASSERT(locked);
+	    locked = false;
+            __cilkscreen_release_lock(&locked);
         }
 
     private:
-        int lock_val;
+        bool locked;
     };
-
-    // Factory function for fake mutex
-    inline
-    fake_mutex *CILKSCREEN_CDECL create_fake_mutex() { return new fake_mutex(); }
-
-    // Destructor function for fake mutex - The mutex cannot be used after
-    // calling this function
-    inline
-    void CILKSCREEN_CDECL destroy_fake_mutex(fake_mutex *m) { delete m; }
 
 } // namespace cilk
 

@@ -1,9 +1,7 @@
-/** @file reducer_string.h
- *
- *  @brief Defines classes for doing parallel string creation by appending.
+/*  reducer_string.h                  -*- C++ -*-
  *
  *  @copyright
- *  Copyright (C) 2012, 2013, Intel Corporation
+ *  Copyright (C) 2009-2013, Intel Corporation
  *  All rights reserved.
  *  
  *  @copyright
@@ -34,6 +32,11 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/** @file reducer_string.h
+ *
+ *  @brief Defines classes for doing parallel string creation by appending.
  *
  *  @ingroup reducers
  *
@@ -140,14 +143,16 @@
  *
  *  String reducers work by creating a string for each view, collecting those strings in a list,
  *  and then concatenating them into a single result string at the end of the computation. This
- *  last step takers place in serial code, and necessarily takes time proportional to the length
+ *  last step takes place in serial code, and necessarily takes time proportional to the length
  *  of the result string. Thus, a parallel string reducer cannot actually speed up the time
  *  spent directly creating the string. This trivial example would probably be slower (because
  *  of reducer overhead) than the corresponding serial code:
  *
- *      array<string> a;
+ *      vector<string> a;
  *      reducer<op_string> r;
- *      cilk_for (int i = 0; i != a.length(); ++i) *r += a[i];
+ *      cilk_for (int i = 0; i != a.length(); ++i) {
+ *          *r += a[i];
+ *      }
  *      string result;
  *      r.move_out(result);
  *
@@ -395,6 +400,8 @@ class op_basic_string : public monoid_with_view< op_basic_string_view<Char, Trai
 
 public:
 
+    /** View type of the monoid.
+     */
     typedef typename base::view_type view_type;
 
     /** Constructor.
@@ -471,8 +478,8 @@ typedef op_basic_string<wchar_t> op_wstring;
 
 /** Deprecated string append reducer class.
  *
- *  reducer_basic_string<Char, Traits, Alloc> is the same as
- *  @ref cilk::reducer< @ref op_basic_string<Char, Traits, Alloc> >, except that
+ *  reducer_basic_string is the same as
+ *  @ref cilk::reducer<@ref op_basic_string>, except that
  *  reducer_basic_string is a proxy for the contained view, so that accumulator variable update
  *  operations can be applied directly to the reducer. For example, a character is appended to a
  *  `reducer<op_basic_string>` with `r->append(c)`, but a character is appended to a
@@ -484,19 +491,19 @@ typedef op_basic_string<wchar_t> op_wstring;
  *              consistent in their implementation, and present a simpler model for new
  *              user-implemented reducers.
  *
- *  @note   Implicit conversions are provided between `reducer_basic_string<Char, Traits,
- *          Alloc>` and
- *          `reducer< op_list_append<Type, Allocator> >`. This allows incremental code
- *          conversion: old code that used  `reducer_list_append` can pass a
- *          `reducer_list_append` to a converted function that now expects a reference to a
- *          `reducer<op_list_append>`, and vice versa.
+ *  @note   Implicit conversions are provided between 
+ *          `reducer_basic_string<Char, Traits, Alloc>` and
+ *          `reducer< op_basic_string<Char, Traits, Alloc> >`. This allows incremental code
+ *          conversion: old code that used  `reducer_string` can pass a
+ *          `reducer_string` to a converted function that now expects a reference to a
+ *          `reducer<op_string>`, and vice versa.
  *
  *  @tparam Type        The value type of the list.
  *  @tparam Allocator   The allocator type of the list.
  *
- *  @see op_list_append
+ *  @see op_basic_string
  *  @see reducer
- *  @see @ref page_reducer_list
+ *  @see @ref page_reducer_string
  */
 template<typename Char,
          typename Traits = std::char_traits<Char>,

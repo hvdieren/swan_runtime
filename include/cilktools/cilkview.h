@@ -122,7 +122,7 @@ static void __cilkview_do_report(cilkview_data_t *start,
                           cilkview_data_t *end,
                           const char *label,
                           unsigned int flags);
-#endif /* CILKVIEW_NO_REPORT
+#endif /* CILKVIEW_NO_REPORT */
 
 /*
  * Metacall data

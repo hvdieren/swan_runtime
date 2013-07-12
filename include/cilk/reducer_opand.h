@@ -1,9 +1,7 @@
-/** @file reducer_opand.h
- *
- *  @brief Defines classes for doing parallel bitwise and reductions.
+/*  reducer_opand.h                  -*- C++ -*-
  *
  *  @copyright
- *  Copyright (C) 2012, Intel Corporation
+ *  Copyright (C) 20009-2013, Intel Corporation
  *  All rights reserved.
  *  
  *  @copyright
@@ -34,6 +32,11 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/** @file reducer_opand.h
+ *
+ *  @brief Defines classes for doing parallel bitwise and reductions.
  *
  *  @ingroup reducers
  *
@@ -186,6 +189,7 @@ public:
      *  @see op_and_view
      */
     class rhs_proxy {
+    public:
         friend class op_and_view;
 
         const op_and_view* m_view;
@@ -313,12 +317,15 @@ class reducer_opand : public reducer< op_and<Type, true> >
     typedef reducer< op_and<Type, true> > base;
     using base::view;
 
-  public:
+public:
     typedef typename base::view_type        view_type;  ///< The view type for the reducer.
     typedef typename view_type::rhs_proxy   rhs_proxy;  ///< The view’s rhs proxy type.
+    typedef view_type                       View;
+    typedef typename base::monoid_type      Monoid;
+    
 
-    /// Construct with default initial value of `~Type()`.
-    reducer_opand() {}
+    /// Construct with default initial value of `Type()`.
+    reducer_opand() : base(Type()) {}
 
     /// Construct with a specified initial value.
     explicit reducer_opand(const Type& initial_value) : base(initial_value) {}
@@ -326,9 +333,25 @@ class reducer_opand : public reducer< op_and<Type, true> >
     /// @name Forwarding functions
     //@{
     /// Functions that are forwarded to the view.
-    reducer_opand& operator&=(const Type& x)        { view() &= x; return *this; }
-    rhs_proxy      operator&(const Type& x) const   { return view() & x; }
-    reducer_opand& operator=(const rhs_proxy& temp) { view() = temp; return *this; }
+    reducer_opand& operator&=(const Type& x)
+    {
+        view() &= x;
+        return *this;
+    }
+    // The legacy definition of reducer_opand::operator&() has different
+    // behavior and a different return type than this definition. The legacy
+    // version is defined as a member function, so this new version is defined
+    // as a free function to give it a different signature, so that they won’t 
+    // end up sharing a single object file entry.
+    friend rhs_proxy operator&(const reducer_opand& r, const Type& x)
+    { 
+        return r.view() & x; 
+    }
+    reducer_opand& operator=(const rhs_proxy& temp) 
+    { 
+        view() = temp;
+        return *this; 
+    }
     //@}
 
     /** @name `*reducer == reducer`.

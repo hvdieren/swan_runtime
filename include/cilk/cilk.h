@@ -1,7 +1,7 @@
 /*  cilk.h                  -*-C++-*-
  *
  *  @copyright
- *  Copyright (C) 2010-2011, Intel Corporation
+ *  Copyright (C) 2010-2013, Intel Corporation
  *  All rights reserved.
  *  
  *  @copyright
@@ -32,13 +32,40 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
- *
  */
-
-/* Define convenient aliases for Cilk keywords */
-
+ 
+/** @file cilk.h
+ *
+ *  @brief Provides convenient aliases for the Cilk language keywords.
+ *
+ *  @details
+ *  Since Cilk is a nonstandard extension to both C and C++, the Cilk
+ *  language keywords all begin with “`_Cilk_`”, which guarantees that they
+ *  will not conflict with user-defined identifiers in properly written 
+ *  programs, so that “standard” C and C++ programs can safely be
+ *  compiled a Cilk-enabled C or C++ compiler.
+ *
+ *  However, this means that the keywords _look_ like something grafted on to
+ *  the base language. Therefore, you can include this header:
+ *
+ *      #include "cilk/cilk.h"
+ *
+ *  and then write the Cilk keywords with a “`cilk_`” prefix instead of
+ *  “`_Cilk_`”.
+ *
+ *  @ingroup language
+ */
+ 
+ 
+/** @defgroup language Language Keywords
+ *  Definitions having to do with the Cilk language.
+ *  @{
+ */
+ 
 #ifndef cilk_spawn
-# define cilk_spawn _Cilk_spawn
-# define cilk_sync  _Cilk_sync
-# define cilk_for   _Cilk_for
+# define cilk_spawn _Cilk_spawn ///< Spawn a task that can execute in parallel.
+# define cilk_sync  _Cilk_sync  ///< Wait for spawned tasks to complete.
+# define cilk_for   _Cilk_for   ///< Execute iterations of a for loop in parallel.
 #endif
+
+/// @}

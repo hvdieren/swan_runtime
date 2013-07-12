@@ -1,6 +1,7 @@
-/*
+/** common.h
+ *
  *  @copyright
- *  Copyright (C) 2010-2011, Intel Corporation
+ *  Copyright (C) 2010-2013, Intel Corporation
  *  All rights reserved.
  *  
  *  @copyright
@@ -31,22 +32,39 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
- *
  */
-
-/**
- * @file common.h
+ 
+/** @file common.h
  *
  * @brief Defines common macros and structures used by the Intel Cilk Plus
  * runtime.
+ *
+ *  @ingroup common
  */
+
+/** @defgroup common Common Definitions
+ *  Macro, structure, and class definitions used elsewhere in the runtime.
+ *  @{
+ */
+ 
+#ifndef INCLUDED_CILK_COMMON
+#define INCLUDED_CILK_COMMON
+
+#ifdef __cplusplus
+/** Namespace for all Cilk definitions that can be included in user code.
+ */
+namespace cilk {
+    
+    /** Namespace for definitions that are primarily intended for use
+     *  in other Cilk definitions.
+     */
+    namespace internal {}
+}
+#endif
 
 /** Cilk library version = 1.0
  */
 #define CILK_LIBRARY_VERSION 100
-
-#ifndef INCLUDED_CILK_COMMON
-#define INCLUDED_CILK_COMMON
 
 #ifdef __cplusplus
 #   include <cassert>
@@ -79,10 +97,7 @@
 #       define CILK_EXPORT      __declspec(dllimport)
 #       define CILK_EXPORT_DATA __declspec(dllimport)
 #   endif  /* IN_CILK_RUNTIME */
-#elif defined(__CYGWIN__)
-#   define CILK_EXPORT      /* nothing */
-#   define CILK_EXPORT_DATA /* nothing */
-#elif defined(__APPLE__)
+#elif defined(__CYGWIN__) || defined(__APPLE__) || defined(_DARWIN_C_SOURCE)
 #   define CILK_EXPORT      /* nothing */
 #   define CILK_EXPORT_DATA /* nothing */
 #else /* Unix/gcc */
@@ -99,10 +114,20 @@
  * @def __CILKRTS_BEGIN_EXTERN_C
  * Macro to denote the start of a section in which all names have "C" linkage.
  * That is, none of the names are to be mangled.
+ * @see __CILKRTS_END_EXTERN_C
+ * @see __CILKRTS_EXTERN_C
  *
  * @def __CILKRTS_END_EXTERN_C
  * Macro to denote the end of a section in which all names have "C" linkage.
  * That is, none of the names are to be mangled.
+ * @see __CILKRTS_BEGIN_EXTERN_C
+ * @see __CILKRTS_EXTERN_C
+ *
+ * @def __CILKRTS_EXTERN_C
+ * Macro to prefix a single definition which has "C" linkage.
+ * That is, the defined name is not to be mangled.
+ * @see __CILKRTS_BEGIN_EXTERN_C
+ * @see __CILKRTS_END_EXTERN_C
  */
 #ifdef __cplusplus
 #   define __CILKRTS_BEGIN_EXTERN_C     extern "C" {
@@ -290,13 +315,20 @@
 // the internal version of API methods require a worker
 // structure as parameter. 
 __CILKRTS_BEGIN_EXTERN_C
+    /// Worker struct, exported for inlined API methods
+    /// @ingroup api
     struct __cilkrts_worker;
 
     /// Worker struct, exported for inlined API methods
+    /// @ingroup api
     typedef struct __cilkrts_worker __cilkrts_worker;     
 
-    /// Worker pointer, exported for inlined API methods
+    /// Worker struct pointer, exported for inlined API methods
+    /// @ingroup api
     typedef struct __cilkrts_worker *__cilkrts_worker_ptr; 
+    
+    
+    /// Fetch the worker out of TLS.
     CILK_ABI(__cilkrts_worker_ptr) __cilkrts_get_tls_worker(void);
 
     /// void *, defined to work around complaints from the compiler
@@ -309,7 +341,9 @@ __CILKRTS_END_EXTERN_C
 #if __CILKRTS_ABI_VERSION >= 1
 // Pedigree API is available only for compilers that use ABI version >= 1.
 
-/** Pedigree information kept in the worker and stack frame */
+/** Pedigree information kept in the worker and stack frame.
+ *  @ingroup api
+ */
 typedef struct __cilkrts_pedigree
 {
     /** Rank at start of spawn helper. Saved rank for spawning functions */
@@ -320,5 +354,7 @@ typedef struct __cilkrts_pedigree
 } __cilkrts_pedigree;
 
 #endif // __CILKRTS_ABI_VERSION >= 1
+
+/// @}
 
 #endif /* INCLUDED_CILK_COMMON */

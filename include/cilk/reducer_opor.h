@@ -1,9 +1,7 @@
-/** @file reducer_opor.h
- *
- *  @brief Defines classes for doing parallel bitwise or reductions.
+/*  reducer_opor.h                  -*- C++ -*-
  *
  *  @copyright
- *  Copyright (C) 2012, Intel Corporation
+ *  Copyright (C) 2009-2013, Intel Corporation
  *  All rights reserved.
  *  
  *  @copyright
@@ -34,6 +32,11 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/** @file reducer_opor.h
+ *
+ *  @brief Defines classes for doing parallel bitwise or reductions.
  *
  *  @ingroup reducers
  *
@@ -314,6 +317,8 @@ class reducer_opor : public reducer< op_or<Type, true> >
   public:
     typedef typename base::view_type        view_type;  ///< The view type for the reducer.
     typedef typename view_type::rhs_proxy   rhs_proxy;  ///< The view’s rhs proxy type.
+    typedef view_type                       View;
+    typedef typename base::monoid_type      Monoid;
 
     /// Construct with default initial value of `Type()`.
     reducer_opor() {}
@@ -325,7 +330,15 @@ class reducer_opor : public reducer< op_or<Type, true> >
     //@{
     /// Functions that are forwarded to the view.
     reducer_opor& operator|=(const Type& x)         { view() |= x; return *this; }
-    rhs_proxy     operator|(const Type& x) const    { return view() | x; }
+    // The legacy definition of reducer_opor::operator|() has different
+    // behavior and a different return type than this definition. The legacy
+    // version is defined as a member function, so this new version is defined
+    // as a free function to give it a different signature, so that they won’t 
+    // end up sharing a single object file entry.
+    friend rhs_proxy operator|(const reducer_opor& r, const Type& x)
+    { 
+        return r.view() | x; 
+    }
     reducer_opor& operator=(const rhs_proxy& temp)  { view() = temp; return *this; }
     //@}
 

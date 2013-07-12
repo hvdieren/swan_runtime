@@ -72,6 +72,11 @@ COMMON_PORTABLE extern const char *const __cilkrts_assertion_failed;
 #define CILK_ASSERT(ex)                                                 \
     (__builtin_expect((ex) != 0, 1) ? (void)0 :                         \
      __cilkrts_bug(__cilkrts_assertion_failed, __FILE__, __LINE__,  #ex))
+
+#define CILK_ASSERT_MSG(ex, msg)                                        \
+    (__builtin_expect((ex) != 0, 1) ? (void)0 :                         \
+     __cilkrts_bug(__cilkrts_assertion_failed, __FILE__, __LINE__,      \
+                   #ex "\n    " msg))
 #endif  // CILK_ASSERT
 
 /**
