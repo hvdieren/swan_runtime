@@ -1,10 +1,8 @@
 /*  metaprogramming.h                  -*- C++ -*-
  *
- *  @copyright
- *  Copyright (C) 2012-2013, Intel Corporation
+ *  Copyright (C) 2012-2014, Intel Corporation
  *  All rights reserved.
  *  
- *  @copyright
  *  Redistribution and use in source and binary forms, with or without
  *  modification, are permitted provided that the following conditions
  *  are met:
@@ -19,7 +17,6 @@
  *      contributors may be used to endorse or promote products derived
  *      from this software without specific prior written permission.
  *  
- *  @copyright
  *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
  *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -61,7 +58,7 @@ namespace internal {
 /** Test if a class is empty.
  *
  *  If @a Class is an empty (and therefore necessarily stateless) class, then
- *  the “empty base-class optimization” guarantees that
+ *  the "empty base-class optimization" guarantees that
  *  `sizeof(check_for_empty_class<Class>) == sizeof(char)`. Conversely, if
  *  `sizeof(check_for_empty_class<Class>) > sizeof(char)`, then @a Class is not
  *  empty, and we must discriminate distinct instances of @a Class.
@@ -84,7 +81,7 @@ namespace internal {
  *  @ingroup common
  */
 template <class Class>
-class class_is_empty { 
+class class_is_empty {
     class check_for_empty_class : public Class
     {
         char m_data;
@@ -103,48 +100,124 @@ public:
 };
 
 
-/** Compute the alignment of a type. (More precisely, the alignment of a data
- *  member of the type in a structure.)
+/** Get the alignment of a type.
  *
  *  For example:
  *
  *      align_of<double>::value == 8
  *
- *  Adapted from the [AlignOf](http://llvm.org/doxygen/AlignOf_8h_source.html)
- *  class used in [LLVM](http://llvm.org).
+ *  @tparam Tp  The type whose alignment is to be computed.
  *
- *  @tparam T   The type whose alignment is to be computed.
+ *  @result     The `value` member of an instantiation of this class template
+ *              will hold the integral alignment requirement of @a Tp.
  *
- *  @result     `value` will be the alignment for type @a T.
- *
- *  @see alignof()
+ *  @pre        @a Tp shall be a complete type.
  *
  *  @ingroup common
  */
-template <typename T>
-class align_of {
-    
-    struct impl {
-      char x;
-      T t;
-      impl();   // Never instantiate.
-      impl(const impl&);
+template <typename Tp>
+struct align_of
+{
+private:
+    struct imp {
+        char m_padding;
+        Tp   m_val;
+
+        // The following declarations exist to suppress compiler-generated
+        // definitions, in case @a Tp does not have a public default
+        // constructor, copy constructor, or destructor.
+        imp(const imp&); // Declared but not defined
+        ~imp();          // Declared but not defined
     };
 
 public:
-    enum {
-        /** The alignment of the type @a T.
-         */
-        value = static_cast<std::size_t>(sizeof(impl) - sizeof(T))
-    };
+    /// The integral alignment requirement of @a Tp.
+    static const std::size_t    value = (sizeof(imp) - sizeof(Tp));
+};
+
+
+/** A class containing raw bytes with a specified alignment and size.
+ *
+ *  An object of type `aligned_storage<S, A>` will have alignment `A` and
+ *  size at least `S`. Its contents will be uninitialized bytes.
+ *
+ *  @tparam Size        The required minimum size of the resulting class.
+ *  @tparam Alignment   The required alignment of the resulting class.
+ *
+ *  @pre    @a Alignment shall be a power of 2 no greater than 64.
+ *
+ *  @note   This is implemented using the `CILK_ALIGNAS` macro, which uses
+ *          the non-standard, implementation-specific features
+ *          `__declspec(align(N))` on Windows, and
+ *          `__attribute__((__aligned__(N)))` on Unix. The `gcc` implementation
+ *          of `__attribute__((__aligned__(N)))` requires a numeric literal `N`
+ *          (_not_ an arbitrary compile-time constant expression). Therefore,
+ *          this class is implemented using specialization on the required
+ *          alignment.
+ *
+ *  @note   The template class is specialized only for the supported
+ *          alignments. An attempt to instantiate it for an unsupported
+ *          alignment will result in a compilation error.
+ */
+template <std::size_t Size, std::size_t Alignment>
+struct aligned_storage;
+
+/// @cond
+template<std::size_t Size> class aligned_storage<Size,  1>
+    { CILK_ALIGNAS( 1) char m_bytes[Size]; };
+template<std::size_t Size> class aligned_storage<Size,  2>
+    { CILK_ALIGNAS( 2) char m_bytes[Size]; };
+template<std::size_t Size> class aligned_storage<Size,  4>
+    { CILK_ALIGNAS( 4) char m_bytes[Size]; };
+template<std::size_t Size> class aligned_storage<Size,  8>
+    { CILK_ALIGNAS( 8) char m_bytes[Size]; };
+template<std::size_t Size> class aligned_storage<Size, 16>
+    { CILK_ALIGNAS(16) char m_bytes[Size]; };
+template<std::size_t Size> class aligned_storage<Size, 32>
+    { CILK_ALIGNAS(32) char m_bytes[Size]; };
+template<std::size_t Size> class aligned_storage<Size, 64>
+    { CILK_ALIGNAS(64) char m_bytes[Size]; };
+/// @endcond
+
+/** A buffer of uninitialized bytes with the same size and alignment as a
+ *  specified type.
+ *
+ *  The class `storage_for_object<Type>` will have the same size and alignment
+ *  properties as `Type`, but it will contain only raw (uninitialized) bytes.
+ *  This allows the definition of a data member which can contain a `Type`
+ *  object which is initialized explicitly under program control, rather
+ *  than implicitly as part of the initialization of the containing class.
+ *  For example:
+ *
+ *      class C {
+ *          storage_for_object<MemberClass> _member;
+ *      public:
+ *          C() ... // Does NOT initialize _member
+ *          void initialize(args)
+ *              { new (_member.pointer()) MemberClass(args); }
+ *          const MemberClass& member() const { return _member.object(); }
+ *                MemberClass& member()       { return _member.object(); }
+ *
+ *  @tparam Type    The type whose size and alignment are to be reflected
+ *                  by this class.
+ */
+template <typename Type>
+class storage_for_object :
+    aligned_storage< sizeof(Type), align_of<Type>::value >
+{
+public:
+    /// Return a typed reference to the buffer.
+    const Type& object() const { return *reinterpret_cast<Type*>(this); }
+    /// Return a typed reference to the buffer.
+          Type& object()       { return *reinterpret_cast<Type*>(this); }
 };
 
 
 /** Get the functor class corresponding to a binary function type.
  *
- *  The `binary_functor` template class class can be instantiated with a binary
+ *  The `binary_functor` template class can be instantiated with a binary
  *  functor class or with a real binary function, and will yield an equivalent
- *  binary functor class class in either case.
+ *  binary functor class in either case.
  *
  *  @tparam F   A binary functor class, a binary function type, or a pointer to
  *              binary function type.
@@ -186,7 +259,7 @@ struct binary_functor<R(*)(A,B)> {
  *  `typed_indirect_binary_function<F>` is an `Adaptable Binary Function` class
  *  based on an existing binary functor class or binary function type @a F. If
  *  @a F is a stateless class, then this class will be empty, and its
- *  `operator()` will invoke @a F’s `operator()`. Otherwise, an object of this
+ *  `operator()` will invoke @a F's `operator()`. Otherwise, an object of this
  *  class will hold a pointer to an object of type @a F, and will refer its
  *  `operator()` calls to the pointed-to @a F object.
  *
@@ -202,14 +275,15 @@ struct binary_functor<R(*)(A,B)> {
  *
  *  @note       Just to repeat: if `F` is an empty class, then
  *              `typed_indirect_binary_function\<F\>' is also an empty class.
- *              This is critical for its use in the @ref min_max::view_base
+ *              This is critical for its use in the
+ *              @ref cilk::cilk_lib_1_1::min_max_internal::view_base
  *              "min/max reducer view classes", where it allows the view to
  *              call a comparison functor in the monoid without actually
- *              having to allocate a pointer in the view class when the 
+ *              having to allocate a pointer in the view class when the
  *              comparison class is empty.
  *
  *  @note       If you have an `Adaptable Binary Function` class or a binary
- *              function type, then you can use the 
+ *              function type, then you can use the
  *              @ref indirect_binary_function class, which derives the
  *              argument and result types parameter type instead of requiring
  *              you to specify them as template arguments.
@@ -238,7 +312,7 @@ class typed_indirect_binary_function : std::binary_function<A1, A2, R>
 public:
     /// Constructor captures a pointer to the wrapped function.
     typed_indirect_binary_function(const F* f) : f(f) {}
-    
+
     /// Return the comparator pointer, or `NULL` if the comparator is stateless.
     const F* pointer() const { return f; }
 
@@ -249,10 +323,10 @@ public:
 
 /// @copydoc typed_indirect_binary_function
 /// Specialization for an empty functor class. (This is only possible if @a F
-/// itself is an empty class. If @a F is a function or pointer-to-function 
+/// itself is an empty class. If @a F is a function or pointer-to-function
 /// type, then the functor will contain a pointer.)
 template <typename F, typename A1, typename A2, typename R, typename Functor>
-class typed_indirect_binary_function<F, A1, A2, R, Functor, true> : 
+class typed_indirect_binary_function<F, A1, A2, R, Functor, true> :
     std::binary_function<A1, A2, R>
 {
 public:
@@ -261,7 +335,7 @@ public:
 
     /// Constructor discards the pointer to a stateless functor class.
     typed_indirect_binary_function(const F* f) {}
-    
+
     /// Create an instance of the stateless functor class and apply it to the arguments.
     R operator()(const A1& a1, const A2& a2) const { return F()(a1, a2); }
 };
@@ -269,28 +343,29 @@ public:
 
 /** Indirect binary function class with inferred types.
  *
- *  This is identical to @ref typed_indirect_binary_function, except that it
- *  derives the binary function argument and result types from the parameter
- *  type @a F instead of taking them as additional template parameters. If @a F
- *  is a class type, then it must be an `Adaptable Binary Function`.
+ *  This is identical to @ref cilk::internal::typed_indirect_binary_function,
+ *  except that it derives the binary function argument and result types from
+ *  the parameter type @a F instead of taking them as additional template
+ *  parameters. If @a F is a class type, then it must be an `Adaptable Binary
+ *  Function`.
  *
  *  @see typed_indirect_binary_function
  *
  *  @ingroup common
  */
 template <typename F, typename Functor = typename binary_functor<F>::type>
-class indirect_binary_function : 
+class indirect_binary_function :
     typed_indirect_binary_function< F
                                   , typename Functor::first_argument_type
                                   , typename Functor::second_argument_type
                                   , typename Functor::result_type
-                                  > 
+                                  >
 {
     typedef     typed_indirect_binary_function< F
                                   , typename Functor::first_argument_type
                                   , typename Functor::second_argument_type
                                   , typename Functor::result_type
-                                  > 
+                                  >
                 base;
 public:
     indirect_binary_function(const F* f) : base(f) {} ///< Constructor
@@ -299,7 +374,7 @@ public:
 
 /** Choose a type based on a boolean constant.
  *
- *  This metafunction is identical to C++11’s condition metafunction.
+ *  This metafunction is identical to C++11's condition metafunction.
  *  It needs to be here until we can reasonably assume that users will be
  *  compiling with C++11.
  *
@@ -333,12 +408,12 @@ struct condition<false, IfTrue, IfFalse>
  *  Causes a compilation error if a compile-time constant expression is false.
  *
  *  @par    Usage example.
- *          This assertion  is used in reducer_min_max.h to avoid defining 
+ *          This assertion  is used in reducer_min_max.h to avoid defining
  *          legacy reducer classes that would not be binary-compatible with the
  *          same classes compiled with earlier versions of the reducer library.
  *
  *              __CILKRTS_STATIC_ASSERT(
- *                  internal::class_is_empty< internal::binary_functor<Compare> >::value, 
+ *                  internal::class_is_empty< internal::binary_functor<Compare> >::value,
  *                  "cilk::reducer_max<Value, Compare> only works with an empty Compare class");
  *
  *  @note   In a C++11 compiler, this is just the language predefined
@@ -394,9 +469,13 @@ inline void* allocate_aligned(std::size_t size, std::size_t alignment)
 #ifdef _WIN32
     return _aligned_malloc(size, alignment);
 #else
+#if defined(__ANDROID__)
+    return memalign(std::max(alignment, sizeof(void*)), size);
+#else
     void* ptr;
     return (posix_memalign(&ptr, std::max(alignment, sizeof(void*)), size) == 0) ? ptr : 0;
-#endif        
+#endif
+#endif
 }
 
 /** Implementation-specific aligned memory deallocation function.
@@ -409,13 +488,13 @@ inline void deallocate_aligned(void* ptr)
     _aligned_free(ptr);
 #else
     std::free(ptr);
-#endif        
+#endif
 }
 
 /** Class to allocate and guard an aligned pointer.
  *
  *  A new_aligned_pointer object allocates aligned heap-allocated memory when
- *  it is created, and automatically deallocates it when it is destroyed 
+ *  it is created, and automatically deallocates it when it is destroyed
  *  unless its `ok()` function is called.
  *
  *  @tparam T   The type of the object to allocate on the heap. The allocated
@@ -426,14 +505,14 @@ class new_aligned_pointer {
     void* m_ptr;
 public:
     /// Constructor allocates the pointer.
-    new_aligned_pointer() : 
+    new_aligned_pointer() :
         m_ptr(allocate_aligned(sizeof(T), internal::align_of<T>::value)) {}
     /// Destructor deallocates the pointer.
     ~new_aligned_pointer() { if (m_ptr) deallocate_aligned(m_ptr); }
     /// Get the pointer.
     operator void*() { return m_ptr; }
     /// Return the pointer and release the guard.
-    T* ok() { 
+    T* ok() {
         T* ptr = static_cast<T*>(m_ptr);
         m_ptr = 0;
         return ptr;

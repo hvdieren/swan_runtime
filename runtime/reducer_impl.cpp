@@ -2,11 +2,9 @@
  *
  *************************************************************************
  *
- *  @copyright
- *  Copyright (C) 2009-2011, Intel Corporation
+ *  Copyright (C) 2009-2014, Intel Corporation
  *  All rights reserved.
  *  
- *  @copyright
  *  Redistribution and use in source and binary forms, with or without
  *  modification, are permitted provided that the following conditions
  *  are met:
@@ -21,7 +19,6 @@
  *      contributors may be used to endorse or promote products derived
  *      from this software without specific prior written permission.
  *  
- *  @copyright
  *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
  *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -82,6 +79,11 @@ static inline void verify_current_wkr(__cilkrts_worker *w)
 #endif
 }
 
+// Suppress clang warning that the expression result is unused
+#if defined(__clang__) && (! defined(__INTEL_COMPILER))
+#   pragma clang diagnostic push
+#   pragma clang diagnostic ignored "-Wunused-value"
+#endif // __clang__
 
 /// Helper class to disable and re-enable Cilkscreen
 struct DisableCilkscreen
@@ -96,6 +98,10 @@ struct EnableCilkscreen
     EnableCilkscreen () { __cilkscreen_enable_checking(); }
     ~EnableCilkscreen () { __cilkscreen_disable_checking(); }
 };
+
+#if defined(__clang__) && (! defined(__INTEL_COMPILER))
+#   pragma clang diagnostic pop
+#endif // __clang__
 
 /**
  * @brief Element for a hyperobject

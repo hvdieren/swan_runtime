@@ -1,10 +1,8 @@
 /** common.h
  *
- *  @copyright
- *  Copyright (C) 2010-2013, Intel Corporation
+ *  Copyright (C) 2010-2014, Intel Corporation
  *  All rights reserved.
  *  
- *  @copyright
  *  Redistribution and use in source and binary forms, with or without
  *  modification, are permitted provided that the following conditions
  *  are met:
@@ -19,7 +17,6 @@
  *      contributors may be used to endorse or promote products derived
  *      from this software without specific prior written permission.
  *  
- *  @copyright
  *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
  *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -43,7 +40,7 @@
  */
 
 /** @defgroup common Common Definitions
- *  Macro, structure, and class definitions used elsewhere in the runtime.
+ *  Definitions for runtime macros, structures, and classes.
  *  @{
  */
  
@@ -55,16 +52,15 @@
  */
 namespace cilk {
     
-    /** Namespace for definitions that are primarily intended for use
-     *  in other Cilk definitions.
+    /** Namespace for definitions re-used in other Cilk definitions.
      */
     namespace internal {}
 }
 #endif
 
-/** Cilk library version = 1.0
+/** Cilk library version = 1.02
  */
-#define CILK_LIBRARY_VERSION 100
+#define CILK_LIBRARY_VERSION 102
 
 #ifdef __cplusplus
 #   include <cassert>
@@ -73,7 +69,7 @@ namespace cilk {
 #endif
 
 /**
- * Prefix standard library function and type names with __STDNS in order to
+ * Prefix standard library function and type names with __STDNS to
  * get correct lookup in both C and C++.
  */
 #ifdef __cplusplus
@@ -101,7 +97,7 @@ namespace cilk {
 #   define CILK_EXPORT      /* nothing */
 #   define CILK_EXPORT_DATA /* nothing */
 #else /* Unix/gcc */
-#   ifdef IN_CILK_RUNTIME
+#   if defined(IN_CILK_RUNTIME) && defined(HAVE_ATTRIBUTE_VISIBILITY)
 #       define CILK_EXPORT      __attribute__((visibility("protected")))
 #       define CILK_EXPORT_DATA __attribute__((visibility("protected")))
 #   else
@@ -159,17 +155,33 @@ namespace cilk {
 
 /**
  * Macro to specify alignment of a data member in a structure.
+ * Because of the way that gcc's alignment attribute is defined, @a n must
+ * be a numeric literal, not just a compile-time constant expression.
  */
 #ifdef _WIN32
 #   define CILK_ALIGNAS(n) __declspec(align(n))
 #else /* Unix/gcc */
 #   define CILK_ALIGNAS(n) __attribute__((__aligned__(n)))
-#endif /* Unix/gcc */
+#endif
 
 /**
  * Macro to specify cache-line alignment of a data member in a structure.
  */
 #define __CILKRTS_CACHE_ALIGN CILK_ALIGNAS(__CILKRTS_CACHE_LINE__)
+
+/**
+ * Macro to specify a class as being at least as strictly aligned as some
+ * type on Windows. gcc does not provide a way of doing this, so on Unix, 
+ * this just specifies the largest natural type alignment. Put the macro
+ * between the `class` keyword and the class name:
+ *
+ *      class CILK_ALIGNAS_TYPE(foo) bar { ... };
+ */
+#ifdef _WIN32
+#   define CILK_ALIGNAS_TYPE(t) __declspec(align(__alignof(t)))
+#else /* Unix/gcc */
+#   define CILK_ALIGNAS_TYPE(t) __attribute__((__aligned__))
+#endif
 
 /**
  * @def CILK_API(RET_TYPE)
@@ -290,24 +302,23 @@ namespace cilk {
 #endif  /* ! defined(_MSC_VER) || (_MSC_VER >= 1600) */
 
 /**
- * @brief Application Binary Interface version of the Cilk runtime library.
+ * @brief Application Binary Interface (ABI) version of the Cilk runtime library.
  *
- * The ABI version is determined by the compiler used.  An object file
- * compiled with a higher ABI version is not compatible with a library that is
- * compiled with a lower ABI version.  An object file compiled with a lower
- * ABI version, however, can be used with a library compiled with a higher ABI
- * version unless otherwise stated.
+ * The compiler determines the ABI version used for compilation.  Object files
+ * compiled with higher ABI versions are not compatible with libraries compiled
+ * with lower ABI versions.  However, an object file compiled with a lower ABI
+ * version can be used with a library compiled with a higher ABI version 
+ * (unless otherwise stated.)
  */
 #ifndef __CILKRTS_ABI_VERSION
 #   ifdef IN_CILK_RUNTIME
 #       define __CILKRTS_ABI_VERSION 1
-#   elif __INTEL_COMPILER > 1200
-        // Intel compiler version >= 12.1
-#       define __CILKRTS_ABI_VERSION 1
-#   else
-        // Compiler does not support ABI version 1
-        // (Non-Intel compiler or Intel compiler prior to version 12.1).
+#   elif defined(__INTEL_COMPILER) && (__INTEL_COMPILER <= 1200)
+        // Intel compilers prior to version 12.1 support only ABI 0
 #       define __CILKRTS_ABI_VERSION 0
+#   else
+        // Non-Intel compiler or Intel compiler after version 12.0.
+#       define __CILKRTS_ABI_VERSION 1
 #   endif
 #endif
 
