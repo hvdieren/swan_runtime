@@ -29,6 +29,20 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
+ *  
+ *  *********************************************************************
+ *  
+ *  PLEASE NOTE: This file is a downstream copy of a file mainitained in
+ *  a repository at cilkplus.org. Changes made to this file that are not
+ *  submitted through the contribution process detailed at
+ *  http://www.cilkplus.org/submit-cilk-contribution will be lost the next
+ *  time that a new version is released. Changes only submitted to the
+ *  GNU compiler collection or posted to the git repository at
+ *  https://bitbucket.org/intelcilkplusruntime/itnel-cilk-runtime.git are
+ *  not tracked.
+ *  
+ *  We welcome your contributions to this open source project. Thank you
+ *  for your assistance in helping us improve Cilk Plus.
  */
 
 /** @file reducer_ostream.h
@@ -320,8 +334,8 @@ class op_basic_ostream :
 {
     typedef monoid_with_view< op_basic_ostream_view<Char, Traits>, Align >
             base;
-    typedef std::basic_ostream<Char, Traits> ostream_type;
-    using base::provisional;
+    typedef std::basic_ostream<Char, Traits>            ostream_type;
+    typedef provisional_guard<typename base::view_type> view_guard;
 
 public:
 
@@ -342,8 +356,8 @@ public:
         view_type*          view,
         const ostream_type& os)
     {
-        provisional( new ((void*)view) view_type(os) ).confirm_if(
-            new ((void*)monoid) op_basic_ostream );
+        view_guard vg( new((void*) view) view_type(os) );
+        vg.confirm_if( new((void*) monoid) op_basic_ostream );
     }
 };
 

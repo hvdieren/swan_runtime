@@ -29,6 +29,20 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
+ *  
+ *  *********************************************************************
+ *  
+ *  PLEASE NOTE: This file is a downstream copy of a file mainitained in
+ *  a repository at cilkplus.org. Changes made to this file that are not
+ *  submitted through the contribution process detailed at
+ *  http://www.cilkplus.org/submit-cilk-contribution will be lost the next
+ *  time that a new version is released. Changes only submitted to the
+ *  GNU compiler collection or posted to the git repository at
+ *  https://bitbucket.org/intelcilkplusruntime/itnel-cilk-runtime.git are
+ *  not tracked.
+ *  
+ *  We welcome your contributions to this open source project. Thank you
+ *  for your assistance in helping us improve Cilk Plus.
  */
 
 /** @file reducer_list.h
@@ -360,9 +374,9 @@ class list_monoid_base : public monoid_with_view<View, Align>
 {
     typedef typename View::value_type           list_type;
     typedef typename list_type::allocator_type  allocator_type;
-    allocator_type                              m_allocator;
+    typedef provisional_guard<View>             view_guard;
 
-    using monoid_base<list_type, View>::provisional;
+    allocator_type                              m_allocator;
 
 public:
 
@@ -398,24 +412,33 @@ public:
 
     template <typename Monoid>
     static void construct(Monoid* monoid, View* view)
-        { provisional( new ((void*)view) View() ).confirm_if(
-            new ((void*)monoid) Monoid(view->get_allocator()) ); }
+    {
+        view_guard vg( new((void*) view) View() );
+        vg.confirm_if( new((void*) monoid) Monoid(view->get_allocator()) ); 
+    }
 
     template <typename Monoid, typename T1>
     static void construct(Monoid* monoid, View* view, const T1& x1)
-        { provisional( new ((void*)view) View(x1) ).confirm_if(
-            new ((void*)monoid) Monoid(view->get_allocator()) ); }
+    {
+        view_guard vg( new((void*) view) View(x1) );
+        vg.confirm_if( new((void*) monoid) Monoid(view->get_allocator()) ); 
+    }
 
     template <typename Monoid, typename T1, typename T2>
-    static void construct(Monoid* monoid, View* view, const T1& x1, const T2& x2)
-        { provisional( new ((void*)view) View(x1, x2) ).confirm_if(
-            new ((void*)monoid) Monoid(view->get_allocator()) ); }
+    static void construct(Monoid* monoid, View* view,
+                          const T1& x1, const T2& x2)
+    {
+        view_guard vg( new((void*) view) View(x1, x2) );
+        vg.confirm_if( new((void*) monoid) Monoid(view->get_allocator()) ); 
+    }
 
     template <typename Monoid, typename T1, typename T2, typename T3>
-    static void construct(Monoid* monoid, View* view, const T1& x1, const T2& x2,
-                            const T3& x3)
-        { provisional( new ((void*)view) View(x1, x2, x3) ).confirm_if(
-            new ((void*)monoid) Monoid(view->get_allocator()) ); }
+    static void construct(Monoid* monoid, View* view,
+                          const T1& x1, const T2& x2, const T3& x3)
+    {
+        view_guard vg( new((void*) view) View(x1, x2, x3) );
+        vg.confirm_if( new((void*) monoid) Monoid(view->get_allocator()) ); 
+    }
 
     //@}
 };

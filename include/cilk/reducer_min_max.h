@@ -29,6 +29,20 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
+ *  
+ *  *********************************************************************
+ *  
+ *  PLEASE NOTE: This file is a downstream copy of a file mainitained in
+ *  a repository at cilkplus.org. Changes made to this file that are not
+ *  submitted through the contribution process detailed at
+ *  http://www.cilkplus.org/submit-cilk-contribution will be lost the next
+ *  time that a new version is released. Changes only submitted to the
+ *  GNU compiler collection or posted to the git repository at
+ *  https://bitbucket.org/intelcilkplusruntime/itnel-cilk-runtime.git are
+ *  not tracked.
+ *  
+ *  We welcome your contributions to this open source project. Thank you
+ *  for your assistance in helping us improve Cilk Plus.
  */
 
 /** @file reducer_min_max.h
@@ -1338,13 +1352,12 @@ protected:
 template <typename View, bool Align = false>
 class monoid_base : public monoid_with_view<View, Align>
 {
-    typedef typename View::compare_type compare_type;
-    typedef typename View::less_type    less_type;
-    const compare_type                  m_compare;
+    typedef typename View::compare_type   compare_type;
+    typedef typename View::less_type      less_type;
+
+    const compare_type                    m_compare;
 
     const compare_type* compare_pointer() const { return &m_compare; }
-
-    using cilk::monoid_base<typename View::value_type, View>::provisional;
 
 public:
 
@@ -1376,33 +1389,50 @@ public:
 
     template <typename Monoid>
     static void construct(Monoid* monoid, View* view)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            new ((void*)view) View(monoid->compare_pointer()) ); }
+    {
+        provisional_guard<Monoid> mg( new((void*) monoid) Monoid );
+        mg.confirm_if( new((void*) view) View(monoid->compare_pointer()) );
+    }
 
     template <typename Monoid, typename T1>
     static void construct(Monoid* monoid, View* view, const T1& x1)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            new ((void*)view) View(x1, monoid->compare_pointer()) ); }
+    {
+        provisional_guard<Monoid> mg( new((void*) monoid) Monoid );
+        mg.confirm_if( new((void*) view) View(x1, monoid->compare_pointer()) ); 
+    }
 
     template <typename Monoid, typename T1, typename T2>
-    static void construct(Monoid* monoid, View* view, const T1& x1, const T2& x2)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            new ((void*)view) View(x1, x2, monoid->compare_pointer()) ); }
+    static void construct(Monoid* monoid, View* view,
+                          const T1& x1, const T2& x2)
+    {
+        provisional_guard<Monoid> mg( new((void*) monoid) Monoid );
+        mg.confirm_if( new((void*) view) View(x1, x2,
+                                              monoid->compare_pointer()) ); 
+    }
 
     template <typename Monoid>
     static void construct(Monoid* monoid, View* view, const less_type& compare)
-        { provisional( new ((void*)monoid) Monoid(compare) ).confirm_if(
-            new ((void*)view) View(monoid->compare_pointer()) ); }
+    {
+        provisional_guard<Monoid> mg( new((void*) monoid) Monoid(compare) );
+        mg.confirm_if( new((void*) view) View(monoid->compare_pointer()) ); 
+    }
 
     template <typename Monoid, typename T1>
-    static void construct(Monoid* monoid, View* view, const T1& x1, const less_type& compare)
-        { provisional( new ((void*)monoid) Monoid(compare) ).confirm_if(
-            new ((void*)view) View(x1, monoid->compare_pointer()) ); }
+    static void construct(Monoid* monoid, View* view, const T1& x1,
+                          const less_type& compare)
+    {
+        provisional_guard<Monoid> mg( new((void*) monoid) Monoid(compare) );
+        mg.confirm_if( new((void*) view) View(x1, monoid->compare_pointer()) ); 
+    }
 
     template <typename Monoid, typename T1, typename T2>
-    static void construct(Monoid* monoid, View* view, const T1& x1, const T2& x2, const less_type& compare)
-        { provisional( new ((void*)monoid) Monoid(compare) ).confirm_if(
-            new ((void*)view) View(x1, x2, monoid->compare_pointer()) ); }
+    static void construct(Monoid* monoid, View* view,
+                          const T1& x1, const T2& x2, const less_type& compare)
+    {
+        provisional_guard<Monoid> mg( new((void*) monoid) Monoid(compare) );
+        mg.confirm_if( new((void*) view) View(x1, x2,
+                                              monoid->compare_pointer()) ); 
+    }
 
     //@}
 };

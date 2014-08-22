@@ -31,6 +31,20 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
+ *  
+ *  *********************************************************************
+ *  
+ *  PLEASE NOTE: This file is a downstream copy of a file mainitained in
+ *  a repository at cilkplus.org. Changes made to this file that are not
+ *  submitted through the contribution process detailed at
+ *  http://www.cilkplus.org/submit-cilk-contribution will be lost the next
+ *  time that a new version is released. Changes only submitted to the
+ *  GNU compiler collection or posted to the git repository at
+ *  https://bitbucket.org/intelcilkplusruntime/itnel-cilk-runtime.git are
+ *  not tracked.
+ *  
+ *  We welcome your contributions to this open source project. Thank you
+ *  for your assistance in helping us improve Cilk Plus.
  **************************************************************************/
 
 #ifdef __linux__
@@ -381,32 +395,28 @@ static int linux_get_affinity_count ()
 
 COMMON_SYSDEP int __cilkrts_hardware_cpu_count(void)
 {
-#if defined __ANDROID__ || (defined(__sun__) && defined(__svr4__))
-    return sysconf (_SC_NPROCESSORS_ONLN);
+#if defined __ANDROID__  || \
+    defined __FreeBSD__  || \
+    defined __OpenBSD__  || \
+    defined __CYGWIN__   || \
+    (defined(__sun__) && defined(__svr4__))
+    return (int)sysconf(_SC_NPROCESSORS_ONLN);
 #elif defined __MIC__
     /// HACK: Usually, the 3rd and 4th hyperthreads are not beneficial
     /// on KNC.  Also, ignore the last core.
-    int P = sysconf (_SC_NPROCESSORS_ONLN);
-    return P/2 - 2;
+    int count = (int)sysconf (_SC_NPROCESSORS_ONLN);
+    return count/2 - 2;
 #elif defined __linux__
     return linux_get_affinity_count();
 #elif defined __APPLE__
-    int count = 0;
-    int cmd[2] = { CTL_HW, HW_NCPU };
+    int count;
     size_t len = sizeof count;
-    int status = sysctl(cmd, 2, &count, &len, 0, 0);
-    assert(status >= 0);
-    assert((unsigned)count == count);
+    int status = sysctlbyname("hw.logicalcpu", &count, &len, 0, 0);
+    assert(0 == status);
 
     return count;
-#elif defined  __FreeBSD__ || defined __OpenBSD__ || defined __CYGWIN__
-    int ncores = sysconf(_SC_NPROCESSORS_ONLN);
-
-    return ncores;
-    // Just get the number of processors
-//    return sysconf(_SC_NPROCESSORS_ONLN);
 #elif defined  __VXWORKS__
-    return __builtin_popcount( vxCpuEnabledGet() );
+    return __builtin_popcount(vxCpuEnabledGet());
 #else
 #error "Unknown architecture"
 #endif

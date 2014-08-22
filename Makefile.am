@@ -1,4 +1,4 @@
-#  Copyright (C) 2011-2014, Intel Corporation
+#  Copyright (C) 2011, 2014, Intel Corporation
 #  All rights reserved.
 #  
 #  Redistribution and use in source and binary forms, with or without
@@ -27,6 +27,20 @@
 #  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
 #  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 #  POSSIBILITY OF SUCH DAMAGE.
+#  
+#  *********************************************************************
+#  
+#  PLEASE NOTE: This file is a downstream copy of a file mainitained in
+#  a repository at cilkplus.org. Changes made to this file that are not
+#  submitted through the contribution process detailed at
+#  http://www.cilkplus.org/submit-cilk-contribution will be lost the next
+#  time that a new version is released. Changes only submitted to the
+#  GNU compiler collection or posted to the git repository at
+#  https://bitbucket.org/intelcilkplusruntime/itnel-cilk-runtime.git are
+#  not tracked.
+#  
+#  We welcome your contributions to this open source project. Thank you
+#  for your assistance in helping us improve Cilk Plus.
 
 AUTOMAKE_OPTIONS = foreign
 
@@ -43,9 +57,9 @@ GENERAL_FLAGS += -fpic -O3
 # Enable Intel Cilk Plus extension
 GENERAL_FLAGS += -fcilkplus
 
-AM_CFLAGS = $(GENERAL_FLAGS) -std=c99
+AM_CFLAGS = $(XCFLAGS) $(GENERAL_FLAGS) -std=c99
 AM_CPPFLAGS = $(GENERAL_FLAGS)
-AM_LDFLAGS = -lpthread -ldl
+AM_LDFLAGS = $(XLDFLAGS)
 
 # Target list.
 lib_LTLIBRARIES = libcilkrts.la
@@ -78,7 +92,6 @@ libcilkrts_la_SOURCES =            \
   runtime/signal_node.c            \
   runtime/spin_mutex.c             \
   runtime/stats.c                  \
-  runtime/symbol_test.c            \
   runtime/sysdep-unix.c            \
   runtime/worker_mutex.c
 
@@ -88,7 +101,8 @@ include include/internal/rev.mk
 
 #libcilkrts_la_LDFLAGS  = -rpath '$(libdir)'
 libcilkrts_la_LDFLAGS = -version-info 5:0:0
-libcilkrts_la_LDFLAGS += -lpthread -ldl
+libcilkrts_la_LDFLAGS += @lt_cv_dlopen_libs@
+libcilkrts_la_LDFLAGS += $(AM_LDFLAGS)
 
 # If we're building on Linux, use the Linux version script
 if LINUX_LINKER_SCRIPT

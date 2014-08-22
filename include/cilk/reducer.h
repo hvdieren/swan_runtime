@@ -29,6 +29,20 @@
  *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  *  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
+ *  
+ *  *********************************************************************
+ *  
+ *  PLEASE NOTE: This file is a downstream copy of a file mainitained in
+ *  a repository at cilkplus.org. Changes made to this file that are not
+ *  submitted through the contribution process detailed at
+ *  http://www.cilkplus.org/submit-cilk-contribution will be lost the next
+ *  time that a new version is released. Changes only submitted to the
+ *  GNU compiler collection or posted to the git repository at
+ *  https://bitbucket.org/intelcilkplusruntime/itnel-cilk-runtime.git are
+ *  not tracked.
+ *  
+ *  We welcome your contributions to this open source project. Thank you
+ *  for your assistance in helping us improve Cilk Plus.
  */
 
 /** @file reducer.h
@@ -56,6 +70,90 @@
 
 namespace cilk {
 
+/** Class for provisionally constructed objects.
+ *
+ *  The monoid_base<T,V>::construct() functions manually construct both a
+ *  monoid and a view. If one of these is constructed successfully, and the
+ *  construction of the other (or some other initialization) fails, then the
+ *  first one must be destroyed to avoid a memory leak. Because the
+ *  construction is explicit, the destruction must be explicit, too.
+ *
+ *  A provisional_guard object wraps a pointer to a newly constructed
+ *  object. A call to its confirm() function confirms that the object is
+ *  really going to be used. If the guard is destroyed without being
+ *  confirmed, then the pointed-to object is destroyed (but not
+ *  deallocated).
+ *
+ *  Expected usage:
+ *
+ *      provisional_guard<T1> x1_provisional( new (x1) T1 );
+ *      … more initialization …
+ *      x1_provisional.confirm();
+ *
+ *  or
+ *
+ *      provisional_guard<T1> x1_provisional( new (x1) T1 );
+ *      x1_provisional.confirm_if( new (x2) T2 );
+ *
+ *  If an exception is thrown in the "more initialization" code in the
+ *  first example, or in the `T2` constructor in the second example, then
+ *  `x1_provisional` will not be confirmed, so when its destructor is
+ *  called during exception unwinding, the `T1` object that was constructed
+ *  in `x1` will be destroyed.
+ *
+ *  **NOTE**: Do *not* be tempted to chain a `provisional_guard`
+ *  constructor with `confirm_if` as in this example: 
+ *
+ *      // BAD IDEA
+ *      provisional_guard<T1>( new (x1) T1 ).confirm_if( new (x2) T2 );
+ *
+ *  The code above is problematic because the evaluation of the T2
+ *  constructor is unsequenced with respect to the call to the
+ *  `provisional_guard` constructor (and with respect the T1 constructor).
+ *  Thus, the compiler may choose to evaluate `new (x2) T2` before
+ *  constructing the guard and leak the T1 object if the `T2` constructor
+ *  throws.
+ *
+ *  @tparam Type    The type of the provisionally constructed object.
+ */
+template <typename Type>
+class provisional_guard {
+    Type* m_ptr;
+
+public:
+
+    /** Constructor. Creates a guard for a provisionally constructed object.
+     *
+     *  @param ptr  A pointer to the provisionally constructed object.
+     */
+    provisional_guard(Type* ptr) : m_ptr(ptr) {}
+
+    /** Destructor. Destroy the object pointed to by the contained pointer
+     *  if it has not been confirmed.
+     */
+    ~provisional_guard() { if (m_ptr) m_ptr->~Type(); }
+
+    /** Confirm the provisional construction. Do *not* delete the contained
+     *  pointer when the guard is destroyed.
+     */
+    void confirm() { m_ptr = 0; }
+
+    /** Confirm provisional construction if argument is non-null. Note that
+     *  if an exception is thrown during evaluation of the argument
+     *  expression, then this function will not be called, and the
+     *  provisional object will not be confirmed. This allows the usage:
+     *
+     *      x1_provisional.confirm_if( new (x2) T2() );
+     *
+     *  @param cond An arbitrary pointer. The provisional object will be
+     *              confirmed if @a cond is not null.
+     *
+     *  @returns    The value of the @a cond argument.
+     */
+    template <typename Cond>
+    Cond* confirm_if(Cond* cond) { if (cond) m_ptr = 0; return cond; }
+};
+
 /** Base class for defining monoids.
  *
  *  The monoid_base class template is useful for creating classes that model
@@ -76,104 +174,6 @@ namespace cilk {
 template <typename Value, typename View = Value>
 class monoid_base
 {
-protected:
-
-    /** Class for provisionally constructed objects.
-     *
-     *  The monoid_base::construct() functions manually construct both a monoid
-     *  and a view. If one of these is constructed successfully, and the
-     *  construction of the other (or some other initialization) fails, then
-     *  the first one must be destroyed to avoid a memory leak. Because the
-     *  construction is explicit, the destruction must be explicit, too.
-     *
-     *  A provisional_guard object wraps a pointer to a newly constructed
-     *  object. A call to its confirm() function confirms that the object is
-     *  really going to be used. If the guard is destroyed without being
-     *  confirmed, then the pointed-to object is destroyed (but not
-     *  deallocated).
-     *
-     *  Expected usage:
-     *
-     *      provisional_guard<T1> x1_provisional( new (x1) T1() );
-     *      … more initialization …
-     *      x1_provisional.confirm();
-     *
-     *  or
-     *
-     *      provisional_guard<T1> x1_provisional( new (x1) T1() );
-     *      x1_provisional.confirm_if( new (x2) T2() );
-     *
-     *  If an exception is thrown in the "more initialization" code in the
-     *  first example, or in the `T2` constructor in the second example, then
-     *  `x1_provisional` will not be confirmed, so when its destructor is
-     *  called during exception unwinding, the `T1` object that was constructed
-     *  in `x1` will be destroyed.
-     *
-     *  @see provisional()
-     *
-     *  @tparam Type    The type of the provisionally constructed object.
-     */
-    template <typename Type>
-    class provisional_guard {
-        Type* m_ptr;
-
-    public:
-
-        /** Constructor. Creates a guard for a provisionally constructed object.
-         *
-         *  @param ptr  A pointer to the provisionally constructed object.
-         */
-        provisional_guard(Type* ptr) : m_ptr(ptr) {}
-
-        /** Destructor. Destroy the object pointed to by the contained pointer
-         *  if it has not been confirmed.
-         */
-        ~provisional_guard() { if (m_ptr) m_ptr->~Type(); }
-
-        /** Confirm the provisional construction. Do *not* delete the contained
-         *  pointer when the guard is destroyed.
-         */
-        void confirm() { m_ptr = 0; }
-
-        /** Confirm provisional construction if argument is non-null. Note that
-         *  if an exception is thrown during evaluation of the argument
-         *  expression, then this function will not be called, and the
-         *  provisional object will not be confirmed. This allows the usage:
-         *
-         *      x1_provisional.confirm_if( new (x2) T2() );
-         *
-         *  @param cond An arbitrary pointer. The provisional object will be
-         *              confirmed if @a cond is not null.
-         *
-         *  @returns    The value of the @a cond argument.
-         */
-        template <typename Cond>
-        Cond* confirm_if(Cond* cond) { if (cond) m_ptr = 0; return cond; }
-    };
-
-
-    /** Create a provisional_guard object. This function allows simpler code
-     *  when the only use of a provisional_guard is in a
-     *  provisional_guard::confirm_if() call immediately following its
-     *  creation. Instead of
-     *
-     *      provisional_guard<T>guard( new (ptr_to_T) T() );
-     *      guard.confirm_if( new (ptr_to_U) U() );
-     *
-     *  you can just write
-     *
-     *      provisional( new (ptr_to_T) T() ).confirm_if( new (ptr_to_U) U() );
-     *
-     *  @tparam Type    The type of the provisionally constructed object.
-     *
-     *  @param  ptr     A pointer to a provisionally constructed object.
-     *
-     *  @returns        A @ref provisional_guard object that guards the
-     *                  provisionally constructed object pointed to by @a ptr.
-     */
-    template <typename Type>
-    static provisional_guard<Type> provisional(Type* ptr)
-        { return provisional_guard<Type>(ptr); }
 
 public:
 
@@ -262,104 +262,141 @@ public:
      *  constructor calls one of the monoid class's static construct()
      *  functions with the addresses of the monoid and the view, and the
      *  construct() function uses placement `new` to construct them.
-     *
      *  This allows the monoid to determine the order in which the monoid and
      *  view are constructed, and to make one of them dependent on the other.
      *
      *  Any arguments to the reducer constructor are just passed on as
      *  additional arguments to the construct() function (after the monoid
-     *  and view addresses).
+     *  and view addresses are set).
      *
-     *  Any monoid whose needs are satisfied by the suite of construct()
+     *  A monoid whose needs are satisfied by the suite of construct()
      *  functions below, such as @ref monoid_with_view, can just inherit them
      *  from monoid_base. Other monoids will need to provide their own versions
      *  to override the monoid_base functions.
      */
     //@{
 
-    /** Default-constructs the monoid, and passes zero to five const reference
+    /** Default-constructs the monoid, identity-constructs the view.
+     *
+     *  @param monoid   Address of uninitialized monoid object.
+     *  @param view     Address of uninitialized initial view object.
+     */
+    //@{
+    template <typename Monoid>
+    static void construct(Monoid* monoid, View* view)
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid() );
+        monoid->identity(view);
+        guard.confirm();
+    }
+    //@}
+
+    /** Default-constructs the monoid, and passes one to five const reference
      *  arguments to the view constructor.
      */
     //@{
 
-    template <typename Monoid>
-    static void construct(Monoid* monoid, View* view)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            (monoid->identity(view), view) ); }
-
     template <typename Monoid, typename T1>
     static void construct(Monoid* monoid, View* view, const T1& x1)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            new ((void*)view) View(x1) ); }
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid() );
+        guard.confirm_if( new((void*) view) View(x1) );
+    }
 
     template <typename Monoid, typename T1, typename T2>
     static void construct(Monoid* monoid, View* view,
                             const T1& x1, const T2& x2)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            new ((void*)view) View(x1, x2) ); }
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid() );
+        guard.confirm_if( new((void*) view) View(x1, x2) );
+    }
 
     template <typename Monoid, typename T1, typename T2, typename T3>
     static void construct(Monoid* monoid, View* view,
                             const T1& x1, const T2& x2, const T3& x3)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            new ((void*)view) View(x1, x2, x3) ); }
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid() );
+        guard.confirm_if( new((void*) view) View(x1, x2, x3) );
+    }
 
     template <typename Monoid, typename T1, typename T2, typename T3,
                 typename T4>
     static void construct(Monoid* monoid, View* view,
                             const T1& x1, const T2& x2, const T3& x3,
                             const T4& x4)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            new ((void*)view) View(x1, x2, x3, x4) ); }
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid() );
+        guard.confirm_if( new((void*) view) View(x1, x2, x3, x4) );
+    }
 
     template <typename Monoid, typename T1, typename T2, typename T3,
                 typename T4, typename T5>
     static void construct(Monoid* monoid, View* view,
                             const T1& x1, const T2& x2, const T3& x3,
                             const T4& x4, const T5& x5)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            new ((void*)view) View(x1, x2, x3, x4, x5) ); }
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid() );
+        guard.confirm_if( new((void*) view) View(x1, x2, x3, x4, x5) );
+    }
 
     //@}
 
-    /** Default-constructs the monoid, and passes one non-const reference argument
-     *  to the view constructor.
+    /** Default-constructs the monoid, and passes one non-const reference
+     *  argument to the view constructor.
      */
     //@{
     template <typename Monoid, typename T1>
     static void construct(Monoid* monoid, View* view, T1& x1)
-        { provisional( new ((void*)monoid) Monoid() ).confirm_if(
-            new ((void*)view) View(x1) ); }
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid() );
+        guard.confirm_if( new((void*) view) View(x1) );
+    }
     //@}
 
-    /** Copy-constructs the monoid, and passes zero to four const reference
+    /** Copy-constructs the monoid, and identity-constructs the view
+     *  constructor.
+     *
+     *  @param monoid   Address of uninitialized monoid object.
+     *  @param view     Address of uninitialized initial view object.
+     *  @param m        Object to be copied into `*monoid`
+     */
+    //@{
+    template <typename Monoid>
+    static void construct(Monoid* monoid, View* view, const Monoid& m)
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid(m) );
+        monoid->identity(view);
+        guard.confirm();
+    }
+    //@}
+
+    /** Copy-constructs the monoid, and passes one to four const reference
      *  arguments to the view constructor.
      */
     //@{
 
-    template <typename Monoid>
-    static void construct(Monoid* monoid, View* view, const Monoid& m)
-        { provisional( new ((void*)monoid) Monoid(m) ).confirm_if(
-            new ((void*)view) View() ); }
-
     template <typename Monoid, typename T1>
     static void construct(Monoid* monoid, View* view, const Monoid& m,
                             const T1& x1)
-        { provisional( new ((void*)monoid) Monoid(m) ).confirm_if(
-            new ((void*)view) View(x1) ); }
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid(m) );
+        guard.confirm_if( new((void*) view) View(x1) );
+    }
 
     template <typename Monoid, typename T1, typename T2>
     static void construct(Monoid* monoid, View* view, const Monoid& m,
                             const T1& x1, const T2& x2)
-    { provisional( new ((void*)monoid) Monoid(m) ).confirm_if(
-        new ((void*)view) View(x1, x2) ); }
+    {
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid(m) );
+        guard.confirm_if( new((void*) view) View(x1, x2) );
+    }
 
     template <typename Monoid, typename T1, typename T2, typename T3>
     static void construct(Monoid* monoid, View* view, const Monoid& m,
                             const T1& x1, const T2& x2, const T3& x3)
     {
-        provisional( new ((void*)monoid) Monoid(m) ).confirm_if(
-            new ((void*)view) View(x1, x2, x3) );
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid(m) );
+        guard.confirm_if( new((void*) view) View(x1, x2, x3) );
     }
 
     template <typename Monoid, typename T1, typename T2, typename T3,
@@ -368,8 +405,8 @@ public:
                             const T1& x1, const T2& x2, const T3& x3,
                             const T4& x4)
     {
-        provisional( new ((void*)monoid) Monoid(m) ).confirm_if(
-            new ((void*)view) View(x1, x2, x3, x4) );
+        provisional_guard<Monoid> guard( new((void*) monoid) Monoid(m) );
+        guard.confirm_if( new((void*) view) View(x1, x2, x3, x4) );
     }
 
     //@}
@@ -396,7 +433,8 @@ public:
  *   state for the reducer.) All of the Cilk predefined reducers use
  *  monoid_with_view or one of its subclasses.
  *
- *  The view class `View` of a monoid_with_view must provide the following public definitions:
+ *  The view class `View` of a monoid_with_view must provide the following
+ *  public definitions:
  *
  *  Definition                       | Meaning
  *  ---------------------------------|--------
@@ -426,7 +464,7 @@ public:
      *  @param  p   A pointer to a block of raw memory large enough to hold a
      *              @p View object.
      */
-    void identity(View* p) const { new ((void*)p) View(); }
+    void identity(View* p) const { new((void*) p) View(); }
 
     /** Reduce the values of two views.
      *
@@ -663,8 +701,9 @@ move_in_wrapper<Type> move_in(const Type& ref)
  *      };
  *
  *
- *  @tparam Reducer The new-style reducer class whose corresponding legacy reducer class
- *                  is `type`, if there is such a legacy reducer class.
+ *  @tparam Reducer The new-style reducer class whose corresponding legacy
+ *                  reducer class is `type`, if there is such a legacy reducer
+ *                  class.
  */
 template <typename Reducer>
 struct legacy_reducer_downcast
@@ -711,14 +750,14 @@ struct reducer_set_get
     // `return_type_for_get_value` is `View::return_type_for_get_value`
     // if it is defined, and just `Value` otherwise.
 
-    template <typename View, bool ViewDoesDefineReturnTypeForGetValue>
+    template <typename InnerView, bool ViewDoesDefineReturnTypeForGetValue>
     struct return_type_for_view_get_value {
         typedef Value type;
     };
 
-    template <typename View>
-    struct return_type_for_view_get_value<View, true> {
-        typedef typename View::return_type_for_get_value type;
+    template <typename InnerView>
+    struct return_type_for_view_get_value<InnerView, true> {
+        typedef typename InnerView::return_type_for_get_value type;
     };
 
 public:
@@ -978,7 +1017,8 @@ protected:
     {
 #ifndef CILK_IGNORE_REDUCER_ALIGNMENT
     assert(reducer_is_cache_aligned() &&
-           "Reducer should be cache aligned. Please see comments following this assertion for explanation and fixes.");
+           "Reducer should be cache aligned. Please see comments following "
+           "this assertion for explanation and fixes.");
 #endif
     /*  "REDUCER SHOULD BE CACHE ALIGNED" ASSERTION.
      *
@@ -1089,8 +1129,9 @@ namespace stub {
  *  A reducer is instantiated on a Monoid.  The Monoid provides the value
  *  type, associative reduce function, and identity for the reducer.
  *
- *  @tparam Monoid  The monoid class that the reducer is instantiated on. It must model
- *                  the @ref reducers_monoid_concept "monoid concept".
+ *  @tparam Monoid  The monoid class that the reducer is instantiated on. It
+ *                  must model the @ref reducers_monoid_concept "monoid
+ *                  concept".
  *
  *  @see @ref pagereducers
  */
@@ -1101,9 +1142,9 @@ class reducer : public internal::reducer_content<Monoid>
     using base::monoid_ptr;
     using base::leftmost_ptr;
   public:
-    typedef Monoid                          monoid_type;    ///< The monoid type.
-    typedef typename Monoid::value_type     value_type;     ///< The value type.
-    typedef typename Monoid::view_type      view_type;      ///< The view type.
+    typedef Monoid                          monoid_type;  ///< The monoid type.
+    typedef typename Monoid::value_type     value_type;   ///< The value type.
+    typedef typename Monoid::view_type      view_type;    ///< The view type.
 
   private:
     typedef internal::reducer_set_get<value_type, view_type> set_get;
@@ -1115,12 +1156,12 @@ class reducer : public internal::reducer_content<Monoid>
 
     /** @name Constructors
      *
-     *  All reducer constructors call the static `construct()` function of the monoid class to
-     *  construct the reducer's monoid and leftmost view.
+     *  All reducer constructors call the static `construct()` function of the
+     *  monoid class to construct the reducer's monoid and leftmost view.
      *
-     *  The reducer constructor arguments are simply passed through to the construct() function.
-     *  Thus, the constructor parameters accepted by a particular reducer class are determined
-     *  by its monoid class.
+     *  The reducer constructor arguments are simply passed through to the
+     *  construct() function.  Thus, the constructor parameters accepted by a
+     *  particular reducer class are determined by its monoid class.
      */
     //@{
 
@@ -1158,15 +1199,20 @@ class reducer : public internal::reducer_content<Monoid>
     }
 
     template <typename T1, typename T2, typename T3, typename T4, typename T5>
-    reducer(const T1& x1, const T2& x2, const T3& x3, const T4& x4, const T5& x5)
+    reducer(const T1& x1, const T2& x2, const T3& x3, const T4& x4,
+            const T5& x5)
     {
-        monoid_type::construct(monoid_ptr(), leftmost_ptr(), x1, x2, x3, x4, x5);
+        monoid_type::construct(monoid_ptr(), leftmost_ptr(),
+                               x1, x2, x3, x4, x5);
     }
 
-    template <typename T1, typename T2, typename T3, typename T4, typename T5, typename T6>
-    reducer(const T1& x1, const T2& x2, const T3& x3, const T4& x4, const T5& x5, const T6& x6)
+    template <typename T1, typename T2, typename T3, typename T4,
+              typename T5, typename T6>
+    reducer(const T1& x1, const T2& x2, const T3& x3, const T4& x4,
+            const T5& x5, const T6& x6)
     {
-        monoid_type::construct(monoid_ptr(), leftmost_ptr(), x1, x2, x3, x4, x5, x6);
+        monoid_type::construct(monoid_ptr(), leftmost_ptr(),
+                               x1, x2, x3, x4, x5, x6);
     }
 
     //@}
@@ -1486,11 +1532,13 @@ using stub::reducer;
  *
  *  @tableofcontents
  *
- *  The Cilk runtime supports reducers written in C as well as in C++. The basic logic is the
- *  same, but the implementation details are very different. The C++ reducer implementation uses
- *  templates heavily to create very generic components. The C reducer implementation uses
- *  macros, which are a much blunter instrument. The most immediate consequence is that the
- *  monoid/view/reducer architecture is mostly implicit rather than explicit in C reducers.
+ *  The Cilk runtime supports reducers written in C as well as in C++. The
+ *  basic logic is the same, but the implementation details are very
+ *  different. The C++ reducer implementation uses templates heavily to create
+ *  very generic components. The C reducer implementation uses macros, which
+ *  are a much blunter instrument. The most immediate consequence is that the
+ *  monoid/view/reducer architecture is mostly implicit rather than explicit
+ *  in C reducers.
  *
  *  @section reducers_c_overview Overview of Using Reducers in C
  *
@@ -1513,77 +1561,83 @@ using stub::reducer;
  *                              destroy-function,
  *                              initial-value);
  *
- *  This is simply an initialized definition of a variable named _reducer-name_. The
- *  @ref CILK_C_DECLARE_REDUCER macro expands to an anonymous `struct` declaration for a reducer
- *  object containing a view of type _value-type_, and the @ref CILK_C_INIT_REDUCER macro
- *  expands to a struct initializer.
+ *  This is simply an initialized definition of a variable named
+ *  _reducer-name_. The @ref CILK_C_DECLARE_REDUCER macro expands to an
+ *  anonymous `struct` declaration for a reducer object containing a view of
+ *  type _value-type_, and the @ref CILK_C_INIT_REDUCER macro expands to a
+ *  struct initializer.
  *
  *  @subsection reducers_c_reduce_func Reduce Functions
  *
- *  The reduce function for a reducer is called when a parallel execution strand terminates, to
- *  combine the values computed by the terminating strand and the strand to its left. It takes
- *  three arguments:
+ *  The reduce function for a reducer is called when a parallel execution
+ *  strand terminates, to combine the values computed by the terminating
+ *  strand and the strand to its left. It takes three arguments:
  *
  *  -   `void* reducer` - the address of the reducer.
  *  -   `void* left` - the address of the value for the left strand.
- *  -   `void* right` - the address of the value for the right (terminating) strand.
+ *  -   `void* right` - the address of the value for the right (terminating)
+ *                      strand.
  *
- *  It must apply the reducer's reduction operation to the `left` and `right` values, leaving
- *  the result in the `left` value. The `right` value is undefined after the reduce function
- *  call.
+ *  It must apply the reducer's reduction operation to the `left` and `right`
+ *  values, leaving the result in the `left` value. The `right` value is
+ *  undefined after the reduce function call.
  *
  *  @subsection reducers_c_identity_func Identity Functions
  *
- *  The identity function for a reducer is called when a parallel execution strand begins, to
- *  initialize its value to the reducer's identity value. It takes two arguments:
+ *  The identity function for a reducer is called when a parallel execution
+ *  strand begins, to initialize its value to the reducer's identity value. It
+ *  takes two arguments:
  *
  *  -   `void* reducer` - the address of the reducer.
  *  -   `void* v` - the address of a freshly allocated block of memory of size
  *      `sizeof(value-type)`.
  *
- *  It must initialize the memory pointed to by `v` so that it contains the reducer's identity
- *  value.
+ *  It must initialize the memory pointed to by `v` so that it contains the
+ *  reducer's identity value.
  *
  *  @subsection reducers_c_destroy_func Destroy Functions
  *
- *  The destroy function for a reducer is called when a parallel execution strand terminates, to
- *  do any necessary cleanup before its value is deallocated. It takes two arguments:
+ *  The destroy function for a reducer is called when a parallel execution
+ *  strand terminates, to do any necessary cleanup before its value is
+ *  deallocated. It takes two arguments:
  *
  *  -   `void* reducer` - the address of the reducer.
  *  -   `void* p` - the address of the value for the terminating strand.
  *
- *  It must release any resources belonging to the value pointed to by `p`, to avoid a resource
- *  leak when the memory containing the value is deallocated.
+ *  It must release any resources belonging to the value pointed to by `p`, to
+ *  avoid a resource leak when the memory containing the value is deallocated.
  *
- *  The runtime function `__cilkrts_hyperobject_noop_destroy` can be used for the destructor
- *  function if the reducer's values do not need any cleanup.
+ *  The runtime function `__cilkrts_hyperobject_noop_destroy` can be used for
+ *  the destructor function if the reducer's values do not need any cleanup.
  *
  *  @subsection reducers_c_register Tell the Cilk Runtime About the Reducer
  *
- *  Call the @ref CILK_C_REGISTER_REDUCER macro to register the reducer with the Cilk runtime:
+ *  Call the @ref CILK_C_REGISTER_REDUCER macro to register the reducer with
+ *  the Cilk runtime:
  *
  *      CILK_C_REGISTER_REDUCER(reducer-name);
  *
- *  The runtime will manage reducer values for all registered reducers when parallel execution
- *  strands begin and end.
+ *  The runtime will manage reducer values for all registered reducers when
+ *  parallel execution strands begin and end.
  *
  *  @subsection reducers_c_update Update the Value Contained in the Reducer
  *
- *  The @ref REDUCER_VIEW macro returns a reference to the reducer's value for the  current
- *  parallel strand:
+ *  The @ref REDUCER_VIEW macro returns a reference to the reducer's value for
+ *  the current parallel strand:
  *
  *      REDUCER_VIEW(reducer-name) = REDUCER_VIEW(reducer-name) OP x;
  *
- *  C++ reducer views restrict access to the wrapped value so that it can only be modified in
- *  ways consistent with the reducer's operation. No such protection is provided for C reducers.
- *  It is
- *  entirely the responsibility of the user to avoid modifying the value in any
- *  inappropriate way.
+ *  C++ reducer views restrict access to the wrapped value so that it can only
+ *  be modified in ways consistent with the reducer's operation. No such
+ *  protection is provided for C reducers.  It is entirely the responsibility
+ *  of the user to avoid modifying the value in any inappropriate way.
  *
- *  @subsection c_reducers_unregister Tell the Cilk Runtime That You Are Done with the Reducer
+ *  @subsection c_reducers_unregister Tell the Cilk Runtime That You Are Done
+ *  with the Reducer
  *
- *  When the parallel computation is complete, call the @ref CILK_C_UNREGISTER_REDUCER macro to
- *  unregister the reducer with the Cilk runtime:
+ *  When the parallel computation is complete, call the @ref
+ *  CILK_C_UNREGISTER_REDUCER macro to unregister the reducer with the Cilk
+ *  runtime:
  *
  *      CILK_C_UNREGISTER_REDUCER(reducer-name);
  *
@@ -1591,10 +1645,11 @@ using stub::reducer;
  *
  *  @subsection c_reducers_retrieve Retrieve the Value from the Reducer
  *
- *  When the parallel computation is complete, use the @ref REDUCER_VIEW macro to retrieve the
- *  final value computed by the reducer.
+ *  When the parallel computation is complete, use the @ref REDUCER_VIEW macro
+ *  to retrieve the final value computed by the reducer.
  *
- *  @subsection reducers_c_example_custom Example - Creating and Using a Custom C Reducer
+ *  @subsection reducers_c_example_custom Example - Creating and Using a
+ *              Custom C Reducer
  *
  *  The `IntList` type represents a simple list of integers.
  *
@@ -1615,7 +1670,8 @@ using stub::reducer;
  *          list->tail = node;
  *      }
  *
- *      // Append the right list to the left list, and leave the right list empty
+ *      // Append the right list to the left list, and leave the right list
+ *      // empty
  *      void IntList_concat(IntList* left, IntList* right)
  *      {
  *          if (left->head) {
@@ -1628,7 +1684,8 @@ using stub::reducer;
  *          IntList_init(*right);
  *      }
  *
- *  This code creates a reducer that supports creating an `IntList` by appending values to it.
+ *  This code creates a reducer that supports creating an `IntList` by
+ *  appending values to it.
  *
  *      void identity_IntList(void* reducer, void* list)
  *      {
@@ -1658,23 +1715,24 @@ using stub::reducer;
  *
  *  @section reducers_c_predefined Predefined C Reducers
  *
- *  Some of the predefined reducer classes in the Cilk library come with a set of predefined
- *  macros to provide the same capabilities in C. In general, two macros are provided for each
- *  predefined reducer family:
+ *  Some of the predefined reducer classes in the Cilk library come with a set
+ *  of predefined macros to provide the same capabilities in C. In general,
+ *  two macros are provided for each predefined reducer family:
  *
- *  -   `CILK_C_REDUCER_operation(reducer-name, type-name, initial-value)` - Declares a
- *      reducer object named _reducer-name_ with initial value _initial-value_ to perform
- *      a reduction using the _operation_ on values of the type specified by _type-name_.
- *      This is the equivalent of the general code described in @ref reducers_c_creation :
+ *  -   `CILK_C_REDUCER_operation(reducer-name, type-name, initial-value)` -
+ *      Declares a reducer object named _reducer-name_ with initial value
+ *      _initial-value_ to perform a reduction using the _operation_ on values
+ *      of the type specified by _type-name_.  This is the equivalent of the
+ *      general code described in @ref reducers_c_creation :
  *
  *          CILK_C_DECLARE_REDUCER(type) reducer-name =
  *              CILK_C_INIT_REDUCER(type, ..., initial-value);
  *
- *      where _type_ is the C type corresponding to _type_name_. See @ref reducers_c_type_names
- *      below for the _type-names_ that you can use.
+ *      where _type_ is the C type corresponding to _type_name_. See @ref
+ *      reducers_c_type_names below for the _type-names_ that you can use.
  *
- *  -   `CILK_C_REDUCER_operation_TYPE(type-name)` - Expands to the `typedef` name for the type
- *      of the reducer object declared by
+ *  -   `CILK_C_REDUCER_operation_TYPE(type-name)` - Expands to the `typedef`
+ *      name for the type of the reducer object declared by
  *      `CILK_C_REDUCER_operation(reducer-name, type-name, initial-value)`.
  *
  *  See @ref reducers_c_example_predefined.
@@ -1695,10 +1753,11 @@ using stub::reducer;
  *
  *  @subsection reducers_c_type_names Numeric Type Names
  *
- *  The type and function names created by the C reducer definition macros incorporate both the
- *  reducer kind (`opadd`, `opxor`, etc.) and the value type of the reducer (`int`, `double`,
- *  etc.). The value type is represented by a _numeric type name_ string. The types supported
- *  in C reducers, and their corresponding numeric type names, are given in the following table:
+ *  The type and function names created by the C reducer definition macros
+ *  incorporate both the reducer kind (`opadd`, `opxor`, etc.) and the value
+ *  type of the reducer (`int`, `double`, etc.). The value type is represented
+ *  by a _numeric type name_ string. The types supported in C reducers, and
+ *  their corresponding numeric type names, are given in the following table:
  *
  *  |   Type                |   Numeric Type Name           |
  *  |-----------------------|-------------------------------|
@@ -1719,7 +1778,8 @@ using stub::reducer;
  *  |  `double`             |  `double`                     |
  *  |  `long double`        |  `longdouble`                 |
  *
- *  @subsection reducers_c_example_predefined Example - Using a Predefined C Reducer
+ *  @subsection reducers_c_example_predefined Example - Using a Predefined C
+ *              Reducer
  *
  *  To compute the sum of all the values in an array of `unsigned int`:
  *
@@ -1745,7 +1805,8 @@ using stub::reducer;
 
 /** @name Compound identifier macros.
  *
- *  These macros are used to construct an identifier by concatenating two or three identifiers.
+ *  These macros are used to construct an identifier by concatenating two or
+ *  three identifiers.
  */
 //@{
 
@@ -1771,15 +1832,16 @@ using stub::reducer;
 
 /** @name Predefined reducer function declaration macros.
  *
- *  These macros are used to create the function headers for the identity, reduction,
- *  and destructor functions for a builtin reducer family. The macro can be followed by
- *  a semicolon to create a declaration, or by a brace-enclosed body to create a definition.
+ *  These macros are used to create the function headers for the identity,
+ *  reduction, and destructor functions for a builtin reducer family. The
+ *  macro can be followed by a semicolon to create a declaration, or by a
+ *  brace-enclosed body to create a definition.
  */
 //@{
 
 /** Create an identity function header.
  *
- *  @note   The name of the function's value pointer parameter will always be `v`.
+ *  @note The name of the function's value pointer parameter will always be `v`.
  *
  *  @param name The reducer family name.
  *  @param tn   The type name.
@@ -1792,7 +1854,8 @@ using stub::reducer;
  *  @param name The reducer family name.
  *  @param tn   The type name.
  *  @param l    The name to use for the function's left value pointer parameter.
- *  @param r    The name to use for the function's right value pointer parameter.
+ *  @param r    The name to use for the function's right value pointer 
+ *              parameter.
  */
 #define __CILKRTS_DECLARE_REDUCER_REDUCE(name,tn,l,r) CILK_EXPORT        \
     void __CILKRTS_MKIDENT3(name,_reduce_,tn)(void* key, void* l, void* r)
@@ -1817,8 +1880,8 @@ using stub::reducer;
 
 /** Declaration of a C reducer structure type.
  *
- *  This macro expands into an anonymous structure declaration for a C reducer structure
- *  which contains a @a Type value. For example:
+ *  This macro expands into an anonymous structure declaration for a C reducer
+ *  structure which contains a @a Type value. For example:
  *
  *      CILK_C_DECLARE_REDUCER(int) my_add_int_reducer =
  *          CILK_C_INIT_REDUCER(int, …);
@@ -1834,8 +1897,9 @@ using stub::reducer;
 
 /** Initializer for a C reducer structure.
  *
- *  This macro expands into a brace-enclosed structure initializer for a C reducer structure
- *  that was declared with `CILK_C_DECLARE_REDUCER(Type)`. For example:
+ *  This macro expands into a brace-enclosed structure initializer for a C
+ *  reducer structure that was declared with
+ *  `CILK_C_DECLARE_REDUCER(Type)`. For example:
  *
  *      CILK_C_DECLARE_REDUCER(int) my_add_int_reducer =
  *          CILK_C_INIT_REDUCER(int,
@@ -1844,17 +1908,19 @@ using stub::reducer;
  *                              __cilkrts_hyperobject_noop_destroy,
  *                              0);
  *
- *  @param Type     The type of the value contained in the reducer object. Must be the same as
- *                  the @a Type argument of the CILK_C_DECLARE_REDUCER macro call that created
- *                  the reducer.
- *  @param Reduce   The address of the @ref reducers_c_reduce_func "reduce function" for the
+ *  @param Type     The type of the value contained in the reducer object. Must
+ *                  be the same as the @a Type argument of the
+ *                  CILK_C_DECLARE_REDUCER macro call that created the
  *                  reducer.
- *  @param Identity The address of the @ref reducers_c_identity_func "identity function" for
- *                  the reducer.
- *  @param Destroy  The address of the @ref reducers_c_destroy_func "destroy function" for the
- *                  reducer.
- *  @param ...      The initial value for the reducer. (A single expression if @a Type is a
- *                  scalar type; a list of values if @a Type is a struct or array type.)
+ *  @param Reduce   The address of the @ref reducers_c_reduce_func
+ *                  "reduce function" for the reducer.
+ *  @param Identity The address of the @ref reducers_c_identity_func
+ *                  "identity function" for the reducer.
+ *  @param Destroy  The address of the @ref reducers_c_destroy_func
+ *                  "destroy function" for the reducer.
+ *  @param ...      The initial value for the reducer. (A single expression if
+ *                  @a Type is a scalar type; a list of values if @a Type is a
+ *                  struct or array type.)
  *
  *  @see @ref reducers_c_creation
  */
@@ -1875,8 +1941,8 @@ using stub::reducer;
 
 /** Register a reducer with the Cilk runtime.
  *
- *  The runtime will manage reducer values for all registered reducers when parallel execution
- *  strands begin and end. For example:
+ *  The runtime will manage reducer values for all registered reducers when
+ *  parallel execution strands begin and end. For example:
  *
  *      CILK_C_REGISTER_REDUCER(my_add_int_reducer);
  *      cilk_for (int i = 0; i != n; ++i) {
@@ -1892,8 +1958,8 @@ using stub::reducer;
 
 /** Unregister a reducer with the Cilk runtime.
  *
- *  The runtime will stop managing reducer values for a reducer after it is unregistered. For
- *  example:
+ *  The runtime will stop managing reducer values for a reducer after it is
+ *  unregistered. For example:
  *
  *      cilk_for (int i = 0; i != n; ++i) {
  *          …
@@ -1909,17 +1975,19 @@ using stub::reducer;
 
 /** Get the current view for a reducer.
  *
- *  The `REDUCER_VIEW(reducer-name)` returns a reference to the reducer's value for the
- *  current parallel strand. This can be used to initialize the value of the  reducer before it
- *  is used, to modify the value of the reducer on the current parallel strand, or to retrieve
- *  the final value of the reducer at the end of the parallel computation.
+ *  The `REDUCER_VIEW(reducer-name)` returns a reference to the reducer's
+ *  value for the current parallel strand. This can be used to initialize the
+ *  value of the reducer before it is used, to modify the value of the reducer
+ *  on the current parallel strand, or to retrieve the final value of the
+ *  reducer at the end of the parallel computation.
  *
  *      REDUCER_VIEW(my_add_int_reducer) = REDUCER_VIEW(my_add_int_reducer) + x;
  *
- *  @note   C++ reducer views restrict access to the wrapped value so that it can only be
- *  modified in ways consistent with the reducer's operation. No such protection is provided
- *  for C reducers. It is entirely the responsibility of the user to refrain from modifying the
- *  value in any inappropriate way.
+ *  @note C++ reducer views restrict access to the wrapped value so that it
+ *  can only be modified in ways consistent with the reducer's operation. No
+ *  such protection is provided for C reducers. It is entirely the
+ *  responsibility of the user to refrain from modifying the value in any
+ *  inappropriate way.
  *
  *  @param Expr The reducer whose value is to be returned.
  *
