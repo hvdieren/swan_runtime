@@ -1,6 +1,6 @@
 // cilk_version.h
 //
-//  Copyright (C) 2009-2014, Intel Corporation
+//  Copyright (C) 2009-2015, Intel Corporation
 //  All rights reserved.
 //  
 //  Redistribution and use in source and binary forms, with or without
@@ -49,10 +49,10 @@
 
 #define VERSION_MAJOR 2
 #define VERSION_MINOR 0
-#define VERSION_BUILD 4277
+#define VERSION_BUILD 4345
 #define VERSION_REV 0
-#define VERSION_STRING "2,0,4277,0"
-#define VERSION_HASH "1e0c43cb8a59"
+#define VERSION_STRING "2,0,4345,0"
+#define VERSION_HASH "72428b949f5b"
 #define VERSION_BRANCH "eng"
-#define TBB_REV_NUMBER ""
-#define VERSION_YEAR "2014"
+#define TBB_REV_NUMBER "13607"
+#define VERSION_YEAR "2015"

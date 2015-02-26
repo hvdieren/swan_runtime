@@ -2,7 +2,7 @@
  *
  *************************************************************************
  *
- *  Copyright (C) 2013-2014, Intel Corporation
+ *  Copyright (C) 2013-2015, Intel Corporation
  *  All rights reserved.
  *  
  *  Redistribution and use in source and binary forms, with or without
@@ -82,6 +82,8 @@
 #include "internal/abi.h"
 #include "cilk-abi-vla-internal.h"
 
+#ifdef __INTEL_COMPILER
+// These functions are used only within __INTEL_COMPILER.
 #if defined(__x86_64) || defined(_M_X64)
 INLINE void setsp(void *val)
 {
@@ -144,7 +146,7 @@ INLINE void copy_frame_up_and_move_bp(
         "movq %2, %%rcx;"
         "shrq $3, %%rcx;"
         "std; rep movsq; cld;"
-        "movl %3, %%rbp;" : 
+        "movq %3, %%rbp;" : 
         :
         "rm"(dst), "rm"(src), "rm"(cpy_bytes), "rm"(new_ebp) :
         "rsi", "rdi", "rcx", "rbp", "memory");
@@ -219,6 +221,7 @@ INLINE void copy_frame_up_and_move_bp(
 }
 #endif
 
+#endif // __INTEL_COMPILER
 
 #define c_cilk_ptr_from_heap  0xc2f2f00d
 #define c_cilk_ptr_from_stack 0xc3f30d0f

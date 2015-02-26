@@ -2,7 +2,7 @@
  *
  *************************************************************************
  *
- *  Copyright (C) 2012-2014, Intel Corporation
+ *  Copyright (C) 2012-2015, Intel Corporation
  *  All rights reserved.
  *  
  *  Redistribution and use in source and binary forms, with or without
@@ -262,10 +262,9 @@ char * walk_pedigree_nodes(char *p, const __cilkrts_pedigree *pnode)
     if (pnode->parent)
     {
         p = walk_pedigree_nodes(p, pnode->parent);
-        p += sprintf(p, "_");
+        p += cilk_snprintf_s(p, PEDIGREE_BUFF_SIZE, "%s", "_");
     }
-
-    return p + sprintf(p, "%" PRIu64, pnode->rank);
+    return p + cilk_snprintf_l(p, PEDIGREE_BUFF_SIZE, "%" PRIu64, pnode->rank);
 }
 
 /**
@@ -289,7 +288,7 @@ void write_to_replay_log (__cilkrts_worker *w, const char *type,
 
     // If we don't have an initial pedigree node, just use "0" to fill the slot
     if (NULL == initial_node)
-        strcpy(pedigree, "0");
+        cilk_strcpy_s(pedigree, PEDIGREE_BUFF_SIZE, "0");
     else
         walk_pedigree_nodes(pedigree, initial_node);
 
@@ -555,7 +554,9 @@ void load_recorded_log(__cilkrts_worker *w)
     FILE *f;
 
     // Open the log for reading
-    sprintf(local_replay_file_name, "%s%d.cilklog", w->g->record_replay_file_name,  w->self);
+    cilk_snprintf_si(local_replay_file_name, sizeof(local_replay_file_name),
+                     "%s%d.cilklog", w->g->record_replay_file_name,  w->self);
+
     f = fopen(local_replay_file_name, "r");
 
     // Make sure we found a log!
@@ -712,7 +713,8 @@ void replay_init_workers(global_state_t *g)
         for(i = 0; i < g->total_workers; ++i)
         {
             __cilkrts_worker *w = g->workers[i];
-            sprintf(worker_file_name, "replay_log_%d.cilklog",  w->self);
+            cilk_snprintf_i(worker_file_name, sizeof(worker_file_name),
+                            "replay_log_%d.cilklog",  w->self);
             w->l->record_replay_fptr = fopen(worker_file_name, "w+");
             CILK_ASSERT(NULL != w->l->record_replay_fptr);
         }
@@ -728,9 +730,8 @@ void replay_init_workers(global_state_t *g)
         for(i = 0; i < g->total_workers; ++i)
         {
             __cilkrts_worker *w = g->workers[i];
-            sprintf(worker_file_name, "%s%d.cilklog",
-                    g->record_replay_file_name,
-                    w->self);
+            cilk_snprintf_si(worker_file_name, sizeof(worker_file_name),
+                             "%s%d.cilklog", g->record_replay_file_name, w->self);
             w->l->record_replay_fptr = fopen(worker_file_name, "w+");
             CILK_ASSERT(NULL != w->l->record_replay_fptr);
         }

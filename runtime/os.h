@@ -2,7 +2,7 @@
  *
  *************************************************************************
  *
- *  Copyright (C) 2009-2014, Intel Corporation
+ *  Copyright (C) 2009-2015, Intel Corporation
  *  All rights reserved.
  *  
  *  Redistribution and use in source and binary forms, with or without
@@ -60,6 +60,7 @@
 #include "rts-common.h"
 #include "cilk/common.h"
 #include "cilk-tbb-interop.h"
+#include "cilk_str_mem.h"
 
 #ifdef __cplusplus
 #   include <cstddef>

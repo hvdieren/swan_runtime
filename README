@@ -40,6 +40,9 @@ configure script:
 
 % ./configure --prefix=/your/path/to/lib
 
+It is also possible to use CMake if the above method does not apply
+well in your environment. Instruction is available in CMakeLists.txt.
+
 #
 #  2. USING:
 #

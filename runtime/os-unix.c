@@ -2,7 +2,7 @@
  *
  *************************************************************************
  *
- *  Copyright (C) 2009-2014, Intel Corporation
+ *  Copyright (C) 2009-2015, Intel Corporation
  *  All rights reserved.
  *  
  *  Redistribution and use in source and binary forms, with or without
@@ -47,13 +47,6 @@
  *  for your assistance in helping us improve Cilk Plus.
  **************************************************************************/
 
-#ifdef __linux__
-    // define _GNU_SOURCE before *any* #include.
-    // Even <stdint.h> will break later #includes if this macro is not
-    // already defined when it is #included.
-#   define _GNU_SOURCE
-#endif
-
 #include "os.h"
 #include "bug.h"
 #include "cilk_malloc.h"
@@ -62,22 +55,27 @@
 #if defined __linux__
 #   include <sys/sysinfo.h>
 #   include <sys/syscall.h>
+
 #elif defined __APPLE__
 #   include <sys/sysctl.h>
     // Uses sysconf(_SC_NPROCESSORS_ONLN) in verbose output
-#elif defined  __FreeBSD__
-// No additional include files
-#elif defined __OpenBSD__
-// No additional include files
-#elif defined __CYGWIN__
-// Cygwin on Windows - no additional include files
+
 #elif defined  __VXWORKS__
 #   include <vxWorks.h>   
 #   include <vxCpuLib.h>   
-#   include <taskLib.h>   
+#   include <taskLib.h>
+   
 // Solaris
 #elif defined __sun__ && defined __svr4__
 #   include <sched.h>
+
+// OSes we know about which don't require any additional files
+#elif defined __CYGWIN__ || \
+      defined __DragonFly__ || \
+      defined __FreeBSD__ || \
+      defined __GNU__
+// No additional include files
+
 #else
 #   error "Unsupported OS"
 #endif
@@ -396,9 +394,9 @@ static int linux_get_affinity_count ()
 COMMON_SYSDEP int __cilkrts_hardware_cpu_count(void)
 {
 #if defined __ANDROID__  || \
-    defined __FreeBSD__  || \
-    defined __OpenBSD__  || \
     defined __CYGWIN__   || \
+    defined __DragonFly__  || \
+    defined __FreeBSD__  || \
     (defined(__sun__) && defined(__svr4__))
     return (int)sysconf(_SC_NPROCESSORS_ONLN);
 #elif defined __MIC__
@@ -418,7 +416,7 @@ COMMON_SYSDEP int __cilkrts_hardware_cpu_count(void)
 #elif defined  __VXWORKS__
     return __builtin_popcount(vxCpuEnabledGet());
 #else
-#error "Unknown architecture"
+#error "Unsupported architecture"
 #endif
 }
 
@@ -433,8 +431,12 @@ COMMON_SYSDEP void __cilkrts_sleep(void)
 
 COMMON_SYSDEP void __cilkrts_yield(void)
 {
-#if __APPLE__ || __FreeBSD__ || __VXWORKS__
-    // On MacOS, call sched_yield to yield quantum.  I'm not sure why we
+#if defined(__ANDROID__)  || \
+    defined(__APPLE__)    || \
+    defined(__FreeBSD__)  || \
+    defined(__VXWORKS__)  || \
+    (defined(__sun__) && defined(__svr4__))
+    // Call sched_yield to yield quantum.  I'm not sure why we
     // don't do this on Linux also.
     sched_yield();
 #elif defined(__MIC__)
@@ -444,14 +446,12 @@ COMMON_SYSDEP void __cilkrts_yield(void)
     // giving up the processor and latency starting up when work becomes
     // available
     _mm_delay_32(1024);
-#elif defined(__ANDROID__) || (defined(__sun__) && defined(__svr4__))
-    // On Android and Solaris, call sched_yield to yield quantum.  I'm not
-    // sure why we don't do this on Linux also.
-    sched_yield();
-#else
+#elif defined(__linux__)
     // On Linux, call pthread_yield (which in turn will call sched_yield)
     // to yield quantum.
     pthread_yield();
+#else
+# error "Unsupported architecture"
 #endif
 }
 
@@ -464,11 +464,10 @@ COMMON_SYSDEP __STDNS size_t cilkos_getenv(char* value, __STDNS size_t vallen,
     const char* envstr = getenv(varname);
     if (envstr)
     {
-        size_t len = strlen(envstr);
+        size_t len = cilk_strlen(envstr);
         if (len > vallen - 1)
             return len + 1;
-
-        strcpy(value, envstr);
+        cilk_strcpy_s(value, vallen, envstr);
         return len;
     }
     else

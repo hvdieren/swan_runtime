@@ -2,7 +2,7 @@
  *
  *************************************************************************
  *
- *  Copyright (C) 2009-2014, Intel Corporation
+ *  Copyright (C) 2009-2015, Intel Corporation
  *  All rights reserved.
  *  
  *  Redistribution and use in source and binary forms, with or without
@@ -50,7 +50,7 @@
 #include "cilk_malloc.h"
 
 #include <stdlib.h>
-#if defined _WIN32 || defined _WIN64 || defined __linux__
+#if defined _WIN32 || defined _WIN64 || defined __GLIBC__ || defined __linux__
 #include <malloc.h>
 #define HAS_MEMALIGN 1
 #endif

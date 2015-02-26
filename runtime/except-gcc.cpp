@@ -2,7 +2,7 @@
  *
  *************************************************************************
  *
- *  Copyright (C) 2009-2014, Intel Corporation
+ *  Copyright (C) 2009-2015, Intel Corporation
  *  All rights reserved.
  *  
  *  Redistribution and use in source and binary forms, with or without
@@ -111,12 +111,12 @@ static void
 decode_exceptions(char *out, size_t len, struct pending_exception_info *info)
 {
     if (info->empty())
-        snprintf(out, len, "[empty]");
+        cilk_snprintf_s(out, len, "%s", "[empty]");
     else if (info->rethrow)
-        snprintf(out, len, "[rethrow %p]",
-                 info->runtime_state.caughtExceptions);
+        cilk_snprintf_l(out, len, "[rethrow %p]",
+                        info->runtime_state.caughtExceptions);
     else
-        snprintf(out, len, "[throw %p]", (void *)info->active);
+        cilk_snprintf_l(out, len, "[throw %p]", (void *)info->active);
 }
 #endif
 

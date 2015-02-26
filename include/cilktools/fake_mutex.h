@@ -2,7 +2,7 @@
  *
  *************************************************************************
  *
- * Copyright (C) 2013-2014, Intel Corporation
+ * Copyright (C) 2013-2015, Intel Corporation
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without

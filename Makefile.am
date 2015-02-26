@@ -1,4 +1,4 @@
-#  Copyright (C) 2011, 2014, Intel Corporation
+#  Copyright (C) 2011-2015, Intel Corporation
 #  All rights reserved.
 #  
 #  Redistribution and use in source and binary forms, with or without
@@ -51,7 +51,7 @@ AUTOMAKE_OPTIONS = foreign
 ACLOCAL_AMFLAGS = -I m4
 
 # Compiler and linker flags.
-GENERAL_FLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/runtime -I$(top_srcdir)/runtime/config/$(config_dir) -DIN_CILK_RUNTIME=1
+GENERAL_FLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/runtime -I$(top_srcdir)/runtime/config/$(config_dir) -I$(top_srcdir)/runtime/sslib -DIN_CILK_RUNTIME=1
 GENERAL_FLAGS += -fpic -O3
 
 # Enable Intel Cilk Plus extension
@@ -67,6 +67,19 @@ lib_LTLIBRARIES = libcilkrts.la
 libcilkrts_la_SOURCES =            \
   runtime/config/$(config_dir)/cilk-abi-vla.c           \
   runtime/config/$(config_dir)/os-unix-sysdep.c \
+  runtime/sslib/ignore_handler_s.c    \
+  runtime/sslib/safe_lib.h            \
+  runtime/sslib/safe_lib_errno.h      \
+  runtime/sslib/safe_str_constraint.c \
+  runtime/sslib/safe_str_constraint.h \
+  runtime/sslib/safe_str_lib.h        \
+  runtime/sslib/safe_types.h          \
+  runtime/sslib/safeclib_private.h    \
+  runtime/sslib/snprintf_s.h          \
+  runtime/sslib/snprintf_support.c    \
+  runtime/sslib/strcpy_s.c            \
+  runtime/sslib/strncpy_s.c           \
+  runtime/sslib/strnlen_s.c           \
   runtime/bug.cpp                  \
   runtime/cilk-abi.c               \
   runtime/cilk-abi-cilk-for.cpp    \
@@ -106,7 +119,7 @@ libcilkrts_la_LDFLAGS += $(AM_LDFLAGS)
 
 # If we're building on Linux, use the Linux version script
 if LINUX_LINKER_SCRIPT
-    libcilkrts_la_LDFLAGS += -Wl,--version-script,$(srcdir)/runtime/linux-symbols.ver
+    libcilkrts_la_LDFLAGS += -Wl,--version-script,$(srcdir)/runtime/gnu-symbols.ver
 endif
 
 # If we're building on MacOS, use the Mac versioning

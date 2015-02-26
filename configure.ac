@@ -1,4 +1,4 @@
-#  Copyright (C) 2011, 2014, Intel Corporation
+#  Copyright (C) 2011-2015, Intel Corporation
 #  All rights reserved.
 #  
 #  Redistribution and use in source and binary forms, with or without
@@ -53,6 +53,9 @@ AC_SUBST(target_alias)
 AM_INIT_AUTOMAKE([1.11 no-define])
 
 AM_MAINTAINER_MODE
+
+# Test for GNU extensions. Will define _GNU_SOURCE if they're available
+AC_USE_SYSTEM_EXTENSIONS
 
 # Check whether alloca.h is available
 AC_FUNC_ALLOCA
