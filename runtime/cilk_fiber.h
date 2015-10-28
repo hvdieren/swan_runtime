@@ -477,6 +477,7 @@ int cilk_fiber_is_resumable(cilk_fiber* fiber);
  */
 char* cilk_fiber_get_stack_base(cilk_fiber* fiber);
 
+__cilkrts_stack_frame* cilk_fiber_allocate_stack_frame(cilk_fiber* fiber);
 
 /****************************************************************************
  * TBB interop functions

@@ -81,6 +81,20 @@ const unsigned magic_number = 0x5afef00d;
 // Page size for stacks
 long cilk_fiber_sysdep::s_page_size = sysconf(_SC_PAGESIZE);
 
+extern "C" {
+__cilkrts_stack_frame* cilk_fiber_allocate_stack_frame(cilk_fiber* fiber) {
+    return ((cilk_fiber_sysdep*)fiber)->allocate_stack_frame();
+}
+}
+
+__cilkrts_stack_frame *
+cilk_fiber_sysdep::allocate_stack_frame() {
+    m_stack_base -= sizeof( __cilkrts_stack_frame );
+    const uintptr_t align_mask = 32 - 1;
+    m_stack_base -= ((std::size_t) m_stack_base) & align_mask;
+    return (__cilkrts_stack_frame*)m_stack_base;
+}
+
 cilk_fiber_sysdep::cilk_fiber_sysdep(std::size_t stack_size)
     : cilk_fiber(stack_size)
     , m_magic(magic_number)
@@ -92,6 +106,7 @@ cilk_fiber_sysdep::cilk_fiber_sysdep(std::size_t stack_size)
     // down to the nearest 32-byte boundary.
     const uintptr_t align_mask = 32 - 1;
     m_stack_base -= ((std::size_t) m_stack_base) & align_mask;
+    m_stack_max = m_stack_base;
 }
 
 cilk_fiber_sysdep::cilk_fiber_sysdep(from_thread_t)
@@ -103,6 +118,7 @@ cilk_fiber_sysdep::cilk_fiber_sysdep(from_thread_t)
     // Dummy stack data for thread-main fiber
     m_stack      = NULL;
     m_stack_base = NULL;
+    m_stack_max  = NULL;
 }
 
 void cilk_fiber_sysdep::convert_fiber_back_to_thread()
@@ -234,6 +250,8 @@ NORETURN cilk_fiber_sysdep::run()
     CILK_ASSERT(magic_number == m_magic);
 
     // If the fiber that switched to me wants to be deallocated, do it now.
+    // TODO: need to reset m_stack_base to m_stack_max when recycling fiber,
+    //       e.g., in reset_state()
     do_post_switch_actions();
 
     // Now call the user proc on the new stack
@@ -283,6 +301,7 @@ void cilk_fiber_sysdep::make_stack(size_t stack_size)
         // There is no stack to return, so the program loses parallelism.
         m_stack = NULL;
         m_stack_base = NULL;
+	m_stack_max = NULL;
         return;
     }
 
@@ -298,7 +317,7 @@ void cilk_fiber_sysdep::make_stack(size_t stack_size)
 void cilk_fiber_sysdep::free_stack()
 {
     if (m_stack) {
-        size_t rounded_stack_size = m_stack_base - m_stack + s_page_size;
+        size_t rounded_stack_size = m_stack_max - m_stack + s_page_size;
         if (munmap(m_stack, rounded_stack_size) < 0)
             __cilkrts_bug("Cilk: stack munmap failed error %d\n", errno);
     }

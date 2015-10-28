@@ -158,6 +158,15 @@ typedef struct __cilkrts_worker_sysdep_state
 #pragma pack(push, 4)
 #endif
 
+typedef struct __cilkrts_pending_frame __cilkrts_pending_frame;
+
+struct __cilkrts_ready_list {
+    __cilkrts_pending_frame * head;
+    __cilkrts_pending_frame * tail;
+};
+
+typedef struct __cilkrts_ready_list __cilkrts_ready_list;
+
 struct __cilkrts_worker {
     /**
      * T, H, and E pointers in the THE protocol See "The implementation of
@@ -239,6 +248,64 @@ struct __cilkrts_worker {
      */
     __cilkrts_pedigree   pedigree;    
 #endif  /* __CILKRTS_ABI_VERSION >= 1 */
+#if 1 /* __CILKRTS_ABI_VERSION >= 2 */
+    /**
+     * List of ready tasks, available for work stealing.
+     * This should be implemented also as THE or a Chase & Lev deque.
+     * At the moment, require lock on worker to access.
+     */
+    __cilkrts_ready_list ready_list;
+#endif  /* __CILKRTS_ABI_VERSION >= 2 */
+};
+
+/**
+ * Pending frame...
+ */
+struct full_or_pending_frame;
+struct full_frame;
+
+typedef unsigned long long pf_magic_t;
+
+#include "worker_mutex.h"
+
+struct __cilkrts_pending_frame {
+    /**
+     * This structure contains the fields unique to a pending frame
+     * that are needed to construct the __cilkrts_stack_frame when needed,
+     * and a pointer to a full frame to link into the spawn tree.
+     */
+    
+    /**
+     * Next pending frame in a ready list.
+     */
+    __cilkrts_pending_frame * next_ready_frame;
+
+    /**
+     * Replicated from __cilkrts_stack_frame to reconstruct pedigree.
+     */
+    union
+    {
+        __cilkrts_pedigree spawn_helper_pedigree; /* Used in spawn helpers */
+        __cilkrts_pedigree parent_pedigree;       /* Used in spawning funcs */
+    };
+
+    /**
+     * The corresponding full_frame that links to parent, siblings, etc.
+     */
+    struct full_frame * frame_ff;
+
+    /**
+     * The function to execute and its arguments. This function will also
+     * release its arguments, if necessary.
+     */
+    void (*call_fn)(__cilkrts_stack_frame *);
+    void * args_tags;
+
+    /**
+     * Number of remaining dependences that need to be resolved before
+     * the frame becomes ready for execution.
+     */
+    int incoming_count;
 };
 
 
@@ -339,6 +406,16 @@ struct __cilkrts_stack_frame
         __cilkrts_pedigree parent_pedigree;       /* Used in spawning funcs */
     };
 #endif  /* __CILKRTS_ABI_VERSION >= 1 */
+#if 1 /* __CILKRTS_ABI_VERSION >= 2 */
+    void (*df_issue_fn)(__cilkrts_pending_frame *, void *);
+    char * args_tags;
+
+    /**
+     * Child stack frame with dataflow dependences that must be issued when
+     * current stack frame is stolen.
+     */
+    __cilkrts_stack_frame * df_issue_child;
+#endif /* __CILKRTS_ABI_VERSION >= 2 */
 };
 
 /*
@@ -389,6 +466,16 @@ struct __cilkrts_stack_frame
  */
 #define CILK_FRAME_EXITING   0x0100
 
+/**
+ * Is this frame a helper function for a spawn with dataflow arguments?
+ */
+#define CILK_FRAME_DATAFLOW 0x0200
+
+/**
+ * Has the task with dataflow arguments been issued?
+ */
+#define CILK_FRAME_DATAFLOW_ISSUED 0x0400
+
 /** Is this frame suspended? (used for debugging) */
 #define CILK_FRAME_SUSPENDED 0x8000
 
@@ -421,6 +508,7 @@ struct __cilkrts_stack_frame
                             CILK_FRAME_SF_PEDIGREE_UNSYNCHED | \
                             CILK_FRAME_LAST | \
                             CILK_FRAME_EXITING | \
+                            CILK_FRAME_DATAFLOW | \
                             CILK_FRAME_SUSPENDED | \
                             CILK_FRAME_UNWINDING | \
                             CILK_FRAME_VERSION_MASK))
@@ -447,6 +535,8 @@ CILK_ABI(void) __cilkrts_enter_frame(__cilkrts_stack_frame* sf);
  */
 CILK_ABI(void) __cilkrts_enter_frame_1(__cilkrts_stack_frame* sf);
 
+CILK_ABI(void) __cilkrts_enter_frame_df(__cilkrts_stack_frame* sf);
+
 /**
  * __cilkrts_enter_frame_fast is the same as __cilkrts_enter_frame, except it
  * assumes that the thread has already been bound to a worker.
@@ -470,6 +560,23 @@ CILK_ABI(void) __cilkrts_enter_frame_fast_1(__cilkrts_stack_frame *sf);
  * @param sf The __cilkrts_stack_frame that is to be left.
  */
 CILK_ABI(void) __cilkrts_leave_frame(__cilkrts_stack_frame *sf);
+
+/**
+ * __cilkrts_pending_frame_create creates a pending frame and the memory
+ * required to store arguments and tags.
+ */
+CILK_ABI(__cilkrts_pending_frame *)
+__cilkrts_pending_frame_create(size_t args_tags_size);
+
+/**
+ * Destroy a previously created pending frame and its args and tags space.
+ */
+CILK_ABI(void) __cilkrts_pending_frame_destroy(__cilkrts_pending_frame *pf);
+
+/**
+ * Detach a pending frame.
+ */
+CILK_ABI(void) __cilkrts_detach_pending(__cilkrts_pending_frame *pf);
 
 /**
  * Wait for any spawned children of this function to complete before

@@ -348,6 +348,13 @@ struct full_frame
     __cilkrts_worker *sync_master;
 
     /**
+     * Size of allocated frames for combined full frame, pending frame
+     * and args/tags data.
+     * [local]
+     */
+    size_t alloc_size;
+
+    /**
      * Value to detect writes off the end of a full_frame.
      */
 #   define FULL_FRAME_MAGIC_1 ((ff_magic_t)0x189986dcc7aee1caULL)
@@ -455,7 +462,8 @@ COMMON_PORTABLE void __cilkrts_adjust_stack(full_frame *ff, size_t size);
  */
 COMMON_PORTABLE
 full_frame *__cilkrts_make_full_frame(__cilkrts_worker *w,
-                                      __cilkrts_stack_frame *sf);
+                                      __cilkrts_stack_frame *sf,
+				      size_t extra_space);
 
 /**
  * @brief Deallocates a full_frame.

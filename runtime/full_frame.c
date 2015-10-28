@@ -57,12 +57,13 @@
 
 COMMON_PORTABLE
 full_frame *__cilkrts_make_full_frame(__cilkrts_worker *w,
-                                      __cilkrts_stack_frame *sf)
+                                      __cilkrts_stack_frame *sf,
+				      size_t extra_space )
 {
     full_frame *ff;
 
     START_INTERVAL(w, INTERVAL_ALLOC_FULL_FRAME) {
-        ff = (full_frame *)__cilkrts_frame_malloc(w, sizeof(*ff));
+        ff = (full_frame *)__cilkrts_frame_malloc(w, sizeof(*ff)+extra_space);
         __cilkrts_mutex_init(&ff->lock);
 
         ff->full_frame_magic_0 = FULL_FRAME_MAGIC_0;
@@ -85,6 +86,7 @@ full_frame *__cilkrts_make_full_frame(__cilkrts_worker *w,
         ff->registration = 0;
 #endif
 	ff->frame_size = 0;
+	ff->alloc_size = sizeof(*ff)+extra_space;
         ff->fiber_self = 0;
         ff->fiber_child = 0;
 
@@ -135,6 +137,12 @@ COMMON_PORTABLE void __cilkrts_take_stack(full_frame *ff, void *sp)
     DBGPRINTF("%d-                __cilkrts_take_stack - adjust (-) sync "
               "stack of full frame %p to %p (-sp: %p)\n",
               __cilkrts_get_tls_worker()->self, ff, ff->sync_sp, sp);
+    DBGPRINTF("%d-                __ delta=%p\n", __cilkrts_get_tls_worker()->self, sync_sp_i);
+    if( (char*)ff->sync_sp != 0 && ( (char *)ff->sync_sp < (char *)0x100000000
+				     || (char *)ff->sync_sp > (char*)0xfffffff000000000ULL) ) {
+	static int bobble = 0;
+	++bobble;
+    }
 }
 
 COMMON_PORTABLE void __cilkrts_adjust_stack(full_frame *ff, size_t size)
@@ -167,7 +175,7 @@ void __cilkrts_destroy_full_frame(__cilkrts_worker *w, full_frame *ff)
     CILK_ASSERT(NULL == ff->child_pending_exception);
     CILK_ASSERT(NULL == ff->right_pending_exception);
     __cilkrts_mutex_destroy(w, &ff->lock);
-    __cilkrts_frame_free(w, ff, sizeof(*ff));
+    __cilkrts_frame_free(w, ff, ff->alloc_size);
 }
 
 COMMON_PORTABLE void validate_full_frame(full_frame *ff)

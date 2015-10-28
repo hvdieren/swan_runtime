@@ -68,6 +68,7 @@
 #define CILK_ABI_VOID        CILK_ABI(void)
 #define CILK_ABI_WORKER_PTR  CILK_ABI(__cilkrts_worker_ptr)
 #define CILK_ABI_THROWS_VOID CILK_ABI_THROWS(void)
+#define CILK_ABI_PENDING_PTR CILK_ABI(__cilkrts_pending_frame*)
 
 /* documentation aid to identify portable vs. nonportable
    parts of the runtime.  See README for definitions. */

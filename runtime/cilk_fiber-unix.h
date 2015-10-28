@@ -136,9 +136,16 @@ struct cilk_fiber_sysdep : public cilk_fiber
      */
     inline char* get_stack_base_sysdep() { return m_stack_base; }
 
+    /**
+     * @brief Allocate __cilkrts_stack_frame on this fiber's stack and
+     * return address to it. Modify m_stack_base to reflect this.
+     */
+    __cilkrts_stack_frame * allocate_stack_frame();
+
   private:
     char*                       m_stack_base;    ///< The base of this fiber's stack.
     char*                       m_stack;         ///< Stack memory (low address)
+    char*                       m_stack_max;     ///< The maximum stack address (equals base unless if __cilkrts_stack_frame is allocated on stack)
     __CILK_JUMP_BUFFER          m_resume_jmpbuf; ///< Place to resume fiber
     unsigned                    m_magic;         ///< Magic number for checking
 

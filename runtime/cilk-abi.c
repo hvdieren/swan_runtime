@@ -137,6 +137,16 @@ CILK_ABI_VOID __cilkrts_enter_frame_1(__cilkrts_stack_frame *sf)
 {
     enter_frame_internal(sf, 1);
     sf->reserved = 0;
+    if( sf->call_parent )
+	sf->call_parent->df_issue_child = 0;
+}
+
+CILK_ABI_VOID __cilkrts_enter_frame_df(__cilkrts_stack_frame *sf)
+{
+    enter_frame_internal(sf, 1); // 2
+    sf->reserved = 0;
+    sf->flags |= CILK_FRAME_DATAFLOW;
+    sf->call_parent->df_issue_child = sf;
 }
 
 static inline
@@ -158,6 +168,73 @@ CILK_ABI_VOID __cilkrts_enter_frame_fast_1(__cilkrts_stack_frame *sf)
 {
     enter_frame_fast_internal(sf, 1);
     sf->reserved = 0;
+}
+
+/**
+ * Handling pending frames
+ */
+CILK_ABI_PENDING_PTR __cilkrts_pending_frame_create(size_t args_tags_size) {
+    __cilkrts_pending_frame * pf;
+    full_frame * ff;
+    size_t ff_size, pf_size, size, align;
+
+    align = sizeof(long);
+
+    ff_size = ( sizeof(full_frame) + align-1 ) & ~(align-1);
+    pf_size = ( sizeof(__cilkrts_pending_frame) + align-1 ) & ~(align-1);
+    size = ff_size + pf_size + args_tags_size;
+    size -= sizeof(full_frame);
+    
+    ff = __cilkrts_make_full_frame( __cilkrts_get_tls_worker(), 0, size );
+    pf = (__cilkrts_pending_frame *)(((char*)ff)+ff_size);
+
+    pf->incoming_count = 1; // start at 1 to avoid release-issue races
+    pf->next_ready_frame = 0;
+    pf->frame_ff = ff;
+
+    pf->args_tags = (void *)(((char *)pf)+pf_size);
+    
+    return pf;
+}
+
+CILK_ABI_VOID __cilkrts_detach_pending(__cilkrts_pending_frame *pf) {
+    /**
+     * ASSERT only one stack frame on deque: tail == head+1 (except for races
+     *    or spurious states in the THE protocol)
+     */
+    __cilkrts_worker *w = __cilkrts_get_tls_worker();
+    if( w == 0 )
+        w = __cilkrts_bind_thread_1();
+
+    // pf->pending_frame_magic_0 = PENDING_FRAME_MAGIC_0;
+    full_frame * parent = w->l->frame_ff;
+    pf->frame_ff->parent = parent;
+
+    __cilkrts_frame_lock( w, parent );
+    printf( "detach_pending parent %p inc join %d\n", parent, parent->join_counter);
+    ++parent->join_counter;
+
+    // TODO: Need a lock on worker to keep head stable?
+    CILK_ASSERT( NULL != w->current_stack_frame );
+    w->current_stack_frame->flags |= CILK_FRAME_UNSYNCHED;
+
+    // Link into list of children of parent
+    // push_child( pf->parent, pf->frame_ff ); -- inlined from scheduler.c
+    if( parent->rightmost_child ) 
+	parent->rightmost_child->right_sibling = pf->frame_ff;
+    pf->frame_ff->left_sibling = parent->rightmost_child;
+    pf->frame_ff->right_sibling = 0;
+    parent->rightmost_child = pf->frame_ff;
+
+    __cilkrts_frame_unlock( w, parent );
+
+    pf->spawn_helper_pedigree.rank = w->pedigree.rank;
+    pf->spawn_helper_pedigree.parent = w->pedigree.parent;
+
+    // TODO: No need to update pf->parent->parent_pedigree as alreay stolen?
+
+    // Bump rank on worker
+    __cilkrts_bump_worker_rank_internal( w );
 }
 
 /**
@@ -189,10 +266,10 @@ static int __cilkrts_undo_detach(__cilkrts_stack_frame *sf)
        second branch of the #if should be faster, but on
        most x86 it is not.  */
 #if defined __i386__ || defined __x86_64__
-    __sync_fetch_and_and(&sf->flags, ~CILK_FRAME_DETACHED);
+    __sync_fetch_and_and(&sf->flags, ~(CILK_FRAME_DETACHED|CILK_FRAME_DATAFLOW));
 #else
     __cilkrts_fence(); /* membar #StoreLoad */
-    sf->flags &= ~CILK_FRAME_DETACHED;
+    sf->flags &= ~(CILK_FRAME_DETACHED|CILK_FRAME_DATAFLOW);
 #endif
 
     return __builtin_expect(t < w->exc, 0);
@@ -407,7 +484,7 @@ CILK_ABI_WORKER_PTR BIND_THREAD_RTN(void)
     START_INTERVAL(w, INTERVAL_IN_SCHEDULER);
     START_INTERVAL(w, INTERVAL_IN_RUNTIME);
     {
-        full_frame *ff = __cilkrts_make_full_frame(w, 0);
+        full_frame *ff = __cilkrts_make_full_frame(w, 0, 0);
 
         ff->fiber_self = cilk_fiber_allocate_from_thread();
         CILK_ASSERT(ff->fiber_self);
