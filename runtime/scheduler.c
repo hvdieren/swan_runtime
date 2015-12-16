@@ -596,7 +596,7 @@ static int can_steal_from_rl(__cilkrts_worker *victim)
     /* Can steal from victim either from LTQ or from ready-list */
     return ((victim->head < victim->tail) && 
             (victim->head < victim->protected_tail))
-        || (NULL != victim->ready_list.head);
+        || (NULL != victim->ready_list.head_next_ready_frame);
 }
 
 /* Return TRUE if the frame can be stolen, false otherwise */
@@ -729,7 +729,7 @@ static full_frame *make_child_from_pending(__cilkrts_worker *w,
 
     // Dataflow fields:
     sf->args_tags = child_pf->args_tags;
-    sf->df_issue_fn = 0xdeadbeef; // task already issued
+    sf->df_issue_fn = (void *)0xdeadbeef; // task already issued
 
     // __cilkrts_detach:
     {
@@ -915,6 +915,7 @@ static void detach_for_steal(__cilkrts_worker *w,
                 = __sync_val_compare_and_swap( &sf->df_issue_child,
                                                sf->df_issue_child, 0 );
             if( to_issue != 0 ) {
+                printf( "%d-   %p found df_issue_child: %p at: %p at[0]: %p\n", w->self, sf, to_issue, to_issue->args_tags, to_issue->args_tags ? *(long **)(to_issue->args_tags) : 0 );
                 to_issue->flags |= CILK_FRAME_DATAFLOW_ISSUED;
                 (*to_issue->df_issue_fn)( 0, to_issue->args_tags );
             }
@@ -959,12 +960,12 @@ static void steal_from_ready_list(__cilkrts_worker *w,
 
     /* Pull a pending task from the victim's ready list */
     /* TODO: at the moment, stealing one task, do half of the ready list */
-    ready_pf = victim->ready_list.head;
-    victim->ready_list.head = ready_pf->next_ready_frame;
-    if( NULL == victim->ready_list.head )
-        victim->ready_list.tail = (__cilkrts_pending_frame *)&victim->ready_list.head;
+    ready_pf = victim->ready_list.head_next_ready_frame;
+    victim->ready_list.head_next_ready_frame = ready_pf->next_ready_frame;
+    if( NULL == victim->ready_list.head_next_ready_frame )
+        victim->ready_list.tail = (__cilkrts_pending_frame *)&victim->ready_list.head_next_ready_frame;
 
-    printf( "%d: steal_from_ready_list stolen=%p args_tags=%p args[0]=%p next on RL: %p...\n", w->self, ready_pf, ready_pf->args_tags, *(long **)ready_pf->args_tags, victim->ready_list.head );
+    printf( "%d: steal_from_ready_list stolen=%p args_tags=%p args[0]=%p next on RL: %p...\n", w->self, ready_pf, ready_pf->args_tags, *(long **)ready_pf->args_tags, victim->ready_list.head_next_ready_frame );
 
     /* Convert the pending frame to a full frame */
     parent_ff = ready_pf->frame_ff->parent;
@@ -1206,7 +1207,7 @@ static void random_steal(__cilkrts_worker *w)
             // holds it.
             NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_USER_WORKER);
 
-        } else if( victim->ready_list.head ) {
+        } else if( victim->ready_list.head_next_ready_frame ) {
             steal_from_ready_list(w, victim, fiber);
             victim_id = victim->self;
             success = 1;
@@ -2455,6 +2456,8 @@ NORETURN __cilkrts_c_sync(__cilkrts_worker *w,
     // and entered the runtime (because it stalls), w's deque is empty
     // and no one else can steal and change w->l->frame_ff.
 
+    CILK_ASSERT(w); // tmp
+    CILK_ASSERT(w->l); // tmp
     ff = w->l->frame_ff;
 #ifdef _WIN32
     __cilkrts_save_exception_state(w, ff);
@@ -3117,8 +3120,8 @@ __cilkrts_worker *make_worker(global_state_t *g,
     w->current_stack_frame = NULL;
     w->reserved = NULL;
 
-    w->ready_list.head = NULL;
-    w->ready_list.tail = (__cilkrts_pending_frame *)&w->ready_list.head;
+    w->ready_list.head_next_ready_frame = NULL;
+    w->ready_list.tail = (__cilkrts_pending_frame *)&w->ready_list.head_next_ready_frame;
     
     w->l->worker_magic_0 = WORKER_MAGIC_0;
     w->l->team = NULL;
@@ -3190,7 +3193,7 @@ __cilkrts_worker *make_worker(global_state_t *g,
 void destroy_worker(__cilkrts_worker *w)
 {
     CILK_ASSERT (NULL == w->l->pending_exception);
-    CILK_ASSERT(NULL == w->ready_list.head);
+    CILK_ASSERT(NULL == w->ready_list.head_next_ready_frame);
 
     // Deallocate the scheduling fiber
     if (NULL != w->l->scheduling_fiber)

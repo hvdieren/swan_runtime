@@ -118,7 +118,7 @@ void __cilkrts_obj_metadata_add_task_write(
 void __cilkrts_obj_metadata_add_task(
     __cilkrts_pending_frame *t, __cilkrts_obj_metadata *meta,
     __cilkrts_task_list_node *tags, int g) {
-    printf( "add_task t=%p meta=%p tags=%p g=%d\n", t, meta, tags, g );
+    // printf( "add_task t=%p meta=%p tags=%p g=%d\n", t, meta, tags, g );
     // Set pointer to task in argument's tags storage
     tags->st_task_and_last = t;
 

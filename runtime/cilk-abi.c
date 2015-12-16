@@ -126,6 +126,9 @@ void enter_frame_internal(__cilkrts_stack_frame *sf, uint32_t version)
     sf->call_parent = w->current_stack_frame;
     sf->worker = w;
     w->current_stack_frame = sf;
+
+    //DBGPRINTF
+    printf("%d-%p enter_frame_internal - sf %p, parent: %p args_tags: %p\n", w->self, w, sf, sf->call_parent, sf->args_tags); /*    */
 }
 
 CILK_ABI_VOID __cilkrts_enter_frame(__cilkrts_stack_frame *sf)
@@ -193,7 +196,9 @@ CILK_ABI_PENDING_PTR __cilkrts_pending_frame_create(size_t args_tags_size) {
     pf->frame_ff = ff;
 
     pf->args_tags = (void *)(((char *)pf)+pf_size);
-    
+
+    printf("     __cilkrts_pending_frame_create - pf %p at=%p\n", pf, pf->args_tags); /*    */
+
     return pf;
 }
 
@@ -211,7 +216,7 @@ CILK_ABI_VOID __cilkrts_detach_pending(__cilkrts_pending_frame *pf) {
     pf->frame_ff->parent = parent;
 
     __cilkrts_frame_lock( w, parent );
-    printf( "detach_pending parent %p inc join %d\n", parent, parent->join_counter);
+    DBGPRINTF("%d-%p __cilkrts_detach_pending - pf %p, parent: %p parent->join_counter: %d\n", w->self, w, pf, parent, parent->join_counter); /*    */
     ++parent->join_counter;
 
     // TODO: Need a lock on worker to keep head stable?
@@ -279,7 +284,7 @@ CILK_ABI_VOID __cilkrts_leave_frame(__cilkrts_stack_frame *sf)
 {
     __cilkrts_worker *w = sf->worker;
 
-/*    DBGPRINTF("%d-%p __cilkrts_leave_frame - sf %p, flags: %x\n", w->self, GetWorkerFiber(w), sf, sf->flags); */
+    DBGPRINTF("%d-%p __cilkrts_leave_frame - sf %p, flags: %x\n", w->self, w, sf, sf->flags); /*    */
 
 #ifdef _WIN32
     /* if leave frame was called from our unwind handler, leave_frame should
@@ -373,6 +378,7 @@ CILK_ABI_VOID __cilkrts_sync(__cilkrts_stack_frame *sf)
 {
     __cilkrts_worker *w = sf->worker;
 /*    DBGPRINTF("%d-%p __cilkrts_sync - sf %p\n", w->self, GetWorkerFiber(w), sf); */
+    printf("%d-%p     __cilkrts_sync - sf %p\n", w->self, w, sf); /*    */
     if (__builtin_expect(!(sf->flags & CILK_FRAME_UNSYNCHED), 0))
         __cilkrts_bug("W%u: double sync %p\n", w->self, sf);
 #ifndef _WIN32
