@@ -109,6 +109,20 @@ typedef struct
 /* struct tags */
 typedef struct __cilkrts_stack_frame __cilkrts_stack_frame; ///< struct tag for stack frame
 
+#if __CILKRTS_ABI_VERSION >= 1 /* TODO: Dataflow version */
+/* Type definitions and struct tags specific to dataflow dependences */
+typedef struct __cilkrts_pending_frame __cilkrts_pending_frame; ///< struct tag for pending frame
+
+typedef struct __cilkrts_ready_list __cilkrts_ready_list; ///< struct tag for ready list
+
+struct __cilkrts_ready_list {
+    __cilkrts_pending_frame * head_next_ready_frame;
+    __cilkrts_pending_frame * tail;
+};
+
+#endif
+
+
 // Forwarded declarations
 typedef struct global_state_t        global_state_t;  ///< Forwarded declaration for global state
 typedef struct local_state           local_state;     ///< Forwarded declaration for local state
@@ -157,15 +171,6 @@ typedef struct __cilkrts_worker_sysdep_state
 #if defined(_MSC_VER) && defined(_M_IX86)
 #pragma pack(push, 4)
 #endif
-
-typedef struct __cilkrts_pending_frame __cilkrts_pending_frame;
-
-struct __cilkrts_ready_list {
-    __cilkrts_pending_frame * head;
-    __cilkrts_pending_frame * tail;
-};
-
-typedef struct __cilkrts_ready_list __cilkrts_ready_list;
 
 struct __cilkrts_worker {
     /**
