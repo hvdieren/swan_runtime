@@ -954,7 +954,7 @@ static void steal_from_ready_list(__cilkrts_worker *w,
 
     w->l->team = victim->l->team;
 
-    printf( "%d: steal_from_ready_list victim=%d...\n", w->self, victim->self );
+    printf( "%d: steal_from_ready_list victim=%d... team=%p\n", w->self, victim->self, w->l->team );
 
     CILK_ASSERT(w->l->frame_ff == 0 || w == victim);
 
@@ -2022,11 +2022,14 @@ static full_frame* check_for_work(__cilkrts_worker *w)
     if (NULL == ff) {
         START_INTERVAL(w, INTERVAL_STEALING) {
             if (w->l->type != WORKER_USER && w->l->team != NULL) {
-                // At this point, the worker knows for certain that it has run
-                // out of work.  Therefore, it loses its team affiliation.  User
-                // workers never change teams, of course.
                 __cilkrts_worker_lock(w);
-                w->l->team = NULL;
+                if( w->ready_list.head_next_ready_frame == NULL ) {
+                    // At this point, the worker knows for certain that it has
+                    // run out of work.  Therefore, it loses its team
+                    // affiliation.  User workers never change teams, of course.
+                    printf( "%d-   team from %p to NULL\n", w->self, w->l->team );
+                    w->l->team = NULL;
+                }
                 __cilkrts_worker_unlock(w);
             }
 
