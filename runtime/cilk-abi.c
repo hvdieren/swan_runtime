@@ -127,6 +127,8 @@ void enter_frame_internal(__cilkrts_stack_frame *sf, uint32_t version)
     sf->worker = w;
     w->current_stack_frame = sf;
 
+    sf->df_issue_child = 0; // Extra work for dataflow...
+
     //DBGPRINTF
     printf("%d-%p enter_frame_internal - sf %p, parent: %p args_tags: %p\n", w->self, w, sf, sf->call_parent, sf->args_tags); /*    */
 }
