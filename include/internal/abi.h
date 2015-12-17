@@ -514,6 +514,7 @@ struct __cilkrts_stack_frame
                             CILK_FRAME_LAST | \
                             CILK_FRAME_EXITING | \
                             CILK_FRAME_DATAFLOW | \
+                            CILK_FRAME_DATAFLOW_ISSUED | \
                             CILK_FRAME_SUSPENDED | \
                             CILK_FRAME_UNWINDING | \
                             CILK_FRAME_VERSION_MASK))

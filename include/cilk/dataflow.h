@@ -15,6 +15,7 @@
 
 #ifdef __cplusplus
 #include <utility>
+// #include <type_traits>
 #endif
 
 __CILKRTS_BEGIN_EXTERN_C
@@ -327,6 +328,8 @@ class object_instance {
 
     /** Friend classes
      */
+    friend class indep<value_type>;
+    friend class outdep<value_type>;
     friend class inoutdep<value_type>;
 
 protected:
@@ -370,6 +373,13 @@ public:
 	: instance_type( new version_type(this, _v) ) { }
     // versioned( value_type && _v )
 	// : instance_type( new version_type(std::forward<value_type>(_v)) ) { }
+/*
+    template<typename ValueTy,
+	     typename = typename std::enable_if<std::is_integral<ValueTy>::value
+						&& std::is_same<ValueTy, Value>::value>::type>
+    versioned()
+	: instance_type( new version_type(this, ValueTy()) ) { }
+*/
 
     /** Obtain an indep specifier for the versioned object.
      */
@@ -415,10 +425,11 @@ private:
     friend version_type;
 
 private:
-    indep( object_version<value_type> * _v ) throw() : instance_type( _v ) { }
+    indep( version_type * v ) throw() : instance_type( v ) { }
 
 public:
-    indep( const version_type & v ) throw() : indep( v.get_version() ) { }
+    indep( const versioned<value_type> & v_ ) throw()
+	: indep( v_.get_version() ) { }
 
     /** Signature function to assertain this is a versioned object.
      */

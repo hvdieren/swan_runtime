@@ -38,7 +38,9 @@ void __cilkrts_obj_metadata_wakeup_hard(
     struct __cilkrts_task_list_node * i_next = 0;
     unsigned new_tasks = 0;
     for( struct __cilkrts_task_list_node * i=head; i; i=i_next ) {
-	struct __cilkrts_pending_frame * t = i->st_task_and_last;
+	struct __cilkrts_pending_frame * t
+	    = (struct __cilkrts_pending_frame *)
+	    ((uintptr_t)i->st_task_and_last & ~(uintptr_t)(1));
 	++new_tasks;
 	i_next = i->it_next;
 	if( __sync_fetch_and_add( &t->incoming_count, -1 ) == 1 ) {
@@ -79,17 +81,21 @@ void __cilkrts_obj_metadata_wakeup_hard(
     }
 
     // assert( (youngest.has_tasks() == (num_gens > 0)) && "tasks require gens" );
+    // printf( "wakeup end hard meta=%p {yg=%d, ng=%d, ont=%d}\n", meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
     spin_mutex_unlock(&meta->mutex);
 }
 
 void __cilkrts_obj_metadata_wakeup(
     __cilkrts_ready_list *rlist, __cilkrts_obj_metadata *meta) {
     spin_mutex_lock( &meta->mutex );
+    // printf( "wakeup begin meta=%p {yg=%d, ng=%d, ont=%d} \n", meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
     if( --meta->oldest_num_tasks > 0 ) {
+	// printf( "wakeup end ont>0 meta=%p {yg=%d, ng=%d, ont=%d} \n", meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
 	spin_mutex_unlock( &meta->mutex );
     } else if( meta->num_gens == 1 ) {
 	meta->num_gens = 0;
 	meta->youngest_group = CILK_OBJ_GROUP_EMPTY;
+	// printf( "wakeup end ng=1 meta=%p {yg=%d, ng=%d, ont=%d}\n", meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
 	spin_mutex_unlock( &meta->mutex );
     } else
 	__cilkrts_obj_metadata_wakeup_hard(rlist, meta);
@@ -118,12 +124,13 @@ void __cilkrts_obj_metadata_add_task_write(
 void __cilkrts_obj_metadata_add_task(
     __cilkrts_pending_frame *t, __cilkrts_obj_metadata *meta,
     __cilkrts_task_list_node *tags, int g) {
-    // printf( "add_task t=%p meta=%p tags=%p g=%d\n", t, meta, tags, g );
     // Set pointer to task in argument's tags storage
     tags->st_task_and_last = t;
 
     // Fully mutual exclusion to avoid races
     spin_mutex_lock( &meta->mutex );
+
+    // printf( "add_task begin t=%p meta=%p {yg=%d, ng=%d, ont=%d} tags=%p g=%d\n", t, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks, tags, g );
 
     int joins = ( meta->youngest_group & ((g | CILK_OBJ_GROUP_EMPTY)
 					  & CILK_OBJ_GROUP_NOT_WRITE ) ) != 0;
@@ -154,10 +161,12 @@ void __cilkrts_obj_metadata_add_task(
 	    (__cilkrts_pending_frame *)
 	    ( ( (uintptr_t)old_tail->st_task_and_last & ~(uintptr_t)1 )
 	      | (uintptr_t)pushg );
-	meta->tasks.tail = old_tail;
+	meta->tasks.tail = tags;
     }
 
     __CILKRTS_ASSERT( meta->num_gens > 0 );
+
+    // printf( "add_task end t=%p meta=%p {yg=%d, ng=%d, ont=%d} tags=%p g=%d\n", t, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks, tags, g );
 
     spin_mutex_unlock( &meta->mutex );
 }
