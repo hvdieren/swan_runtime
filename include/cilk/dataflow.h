@@ -14,6 +14,7 @@
 #include "cilk/../../runtime/spin_mutex.h"
 
 #ifdef __cplusplus
+#include <new>
 #include <utility>
 // #include <type_traits>
 #endif
@@ -161,7 +162,7 @@ struct object_traits {
      */
     typedef Value value_type;
 
-    static constexpr __STDNS size_t size = sizeof(value_type);
+    static constexpr /*__STDNS*/ size_t size = sizeof(value_type);
 
     static void initialize_wrapper( void *payload, void *v ) {
 	new (reinterpret_cast<value_type *>(v)) value_type();
@@ -169,7 +170,7 @@ struct object_traits {
     static void destroy_wrapper( void *payload, void *v ) {
 	reinterpret_cast<value_type *>(v)->~value_type();
     }
-    static void* allocate_wrapper( __STDNS size_t size ) {
+    static void* allocate_wrapper( /*__STDNS*/ size_t size ) {
 	return operator new(size);
     }
     static void deallocate_wrapper( void *payload ) {
@@ -221,6 +222,22 @@ private:
 	    reinterpret_cast<void *>( const_cast<value_type *>( &val ) ) );
 	printf( "object_version construct: %p meta %p 2\n", this, &v.meta );
     }
+    object_version( instance_type * obj_ ) {
+	static const __cilkrts_obj_traits traits = {
+	    object_traits<value_type>::initialize_wrapper,
+	    object_traits<value_type>::destroy_wrapper,
+	    object_traits<value_type>::allocate_wrapper,
+	    object_traits<value_type>::deallocate_wrapper,
+	    object_traits<value_type>::size
+	};
+	value_type val;
+	__cilkrts_obj_version_init( &v, &traits );
+	traits.initialize_fn(
+	    v.payload,
+	    reinterpret_cast<void *>( const_cast<value_type *>( &val ) ) );
+	printf( "object_version construct: %p meta %p 2\n", this, &v.meta );
+    }
+
 
     // First-create constructor for unversioned objects
     // obj_version( size_t sz, char * payload_ptr, typeinfo tinfo )
@@ -258,7 +275,7 @@ private:
 private:
     // Setting noinline helps performance on AMD (Opteron 6100)
     // but not on Intel (Core i7).
-    void del_ref_delete() __attribute__((noinline));
+    void del_ref_delete(); // __attribute__((noinline));
 
 #if 0
 // protected:
@@ -371,6 +388,9 @@ private:
 public:
     versioned( const value_type & _v )
 	: instance_type( new version_type(this, _v) ) { }
+
+    versioned()
+	: instance_type( new version_type(this) ) { }
     // versioned( value_type && _v )
 	// : instance_type( new version_type(std::forward<value_type>(_v)) ) { }
 /*
