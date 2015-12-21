@@ -251,7 +251,7 @@ private:
 	// payload->add_ref();
     // }
     inline ~object_version() {
-	__cilkrts_obj_version_destroy( &v );
+	__cilkrts_obj_version_del_ref( &v );
     }
 
 public:
@@ -354,6 +354,7 @@ protected:
 
     object_instance( version_type *v ) : v( v ) { }
 
+public: // tmp
     version_type * get_version() { return v; }
     version_type * get_version() const { return v; }
 
