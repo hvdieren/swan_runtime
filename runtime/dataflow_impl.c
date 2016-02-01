@@ -116,14 +116,6 @@ void __cilkrts_obj_metadata_add_task_write(
     __cilkrts_obj_metadata_add_task(pf, meta, tags, CILK_OBJ_GROUP_WRITE);
 }
 
-// TODO: specialise to add_running_task, to call in case of stealing a ready
-//       (running) task and issueing it upon steal. This could be faster:
-//       joins=1, pushg=0 and ready=1, so only need to set num_gens=1,
-//       youngest_group=g and oldest_num_tasks++ without further ado.
-//       Could it avoid the lock?
-//       Alternatively, add argument 'is_running', do an if() on it and
-//       hope inlining and constant propagation will do their work.
-//       t==0 tells you the same...
 void __cilkrts_obj_metadata_add_task(
     __cilkrts_pending_frame *t, __cilkrts_obj_metadata *meta,
     __cilkrts_task_list_node *tags, int g) {
@@ -132,6 +124,18 @@ void __cilkrts_obj_metadata_add_task(
 
     // Fully mutual exclusion to avoid races
     spin_mutex_lock( &meta->mutex );
+
+    // Optimized version. This is called only if the task is already running,
+    // by stealing the parent of an un-issued ready task. In this case,
+    // joins=1, pushg=0 and ready=1, so only need to set num_gens=1,
+    // youngest_group=g and oldest_num_tasks++ without further ado.
+    if( !t ) {
+	meta->num_gens = 1;
+	meta->oldest_num_tasks++;
+	meta->youngest_group = g;
+	spin_mutex_unlock( &meta->mutex );
+	return;
+    }
 
     // printf( "%d-%p: add_task begin t=%p meta=%p {yg=%d, ng=%d, ont=%d} tags=%p g=%d\n", __cilkrts_get_tls_worker()->self, (void*)0, t, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks, tags, g );
 
