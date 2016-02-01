@@ -78,7 +78,7 @@ typedef struct spin_mutex {
     volatile int lock;
 
     /** Padding so the mutex takes up a cache line. */
-    char pad[64/sizeof(int) - sizeof(int)];
+    int pad[64/sizeof(int) - 1];
 } spin_mutex;
 
 
