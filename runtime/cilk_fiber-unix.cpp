@@ -204,6 +204,12 @@ NORETURN cilk_fiber_sysdep::run()
     CILK_ASSERT(!this->is_allocated_from_thread());
     CILK_ASSERT(!this->is_resumable());
 
+    // This is dangerous: this operation deallocates a previously allocated
+    // stack frame. It is assumed that only one stack frame can be allocated
+    // on any fiber/stack at a time through this interface, designed for
+    // pending frames specifically.
+    m_stack_base = m_stack_max;
+
     // TBD: This setjmp/longjmp pair simply changes the stack pointer.
     // We could probably replace this code with some assembly.
     if (! CILK_SETJMP(m_resume_jmpbuf))
