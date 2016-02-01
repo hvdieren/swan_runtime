@@ -426,7 +426,7 @@ struct __cilkrts_stack_frame
      * the df_issue_child field in the parent stack frame in order to
      * synchronise with other workers on whether to issue+release or not.
      */
-    __cilkrts_stack_frame ** df_issue_me_ptr;
+    __cilkrts_stack_frame * volatile * df_issue_me_ptr;
 #endif /* __CILKRTS_ABI_VERSION >= 2 */
 };
 
