@@ -145,10 +145,7 @@ void __cilkrts_obj_metadata_add_task(
     // TODO: in CS, so non-atomic suffices?
     // __sync_fetch_and_add( &meta->num_gens, (uint32_t)pushg );
     meta->num_gens += (uint32_t)pushg;
-assert( meta->num_gens < 10000 ); // RM
     meta->oldest_num_tasks += ready;
-assert( meta->oldest_num_tasks < 10000 ); // RM
-    // youngest.open_group( g ); // redundant if joins == true
     meta->youngest_group = g;
     
     if( !ready ) {
