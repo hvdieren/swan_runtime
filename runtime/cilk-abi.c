@@ -128,9 +128,10 @@ void enter_frame_internal(__cilkrts_stack_frame *sf, uint32_t version)
     w->current_stack_frame = sf;
 
     sf->df_issue_child = 0; // Extra work for dataflow...
+    sf->df_issue_me_ptr = 0; // Extra work for dataflow...
 
     //DBGPRINTF
-    printf("%d-%p enter_frame_internal - sf %p, parent: %p args_tags: %p\n", w->self, w, sf, sf->call_parent, sf->args_tags); /*    */
+    // printf("%d-%p enter_frame_internal - sf %p, parent: %p args_tags: %p\n", w->self, w, sf, sf->call_parent, sf->args_tags); /*    */
 }
 
 CILK_ABI_VOID __cilkrts_enter_frame(__cilkrts_stack_frame *sf)
@@ -142,8 +143,10 @@ CILK_ABI_VOID __cilkrts_enter_frame_1(__cilkrts_stack_frame *sf)
 {
     enter_frame_internal(sf, 1);
     sf->reserved = 0;
-    if( sf->call_parent )
+    if( sf->call_parent ) {
 	sf->call_parent->df_issue_child = 0;
+	sf->df_issue_me_ptr = &sf->call_parent->df_issue_child;
+    }
 }
 
 CILK_ABI_VOID __cilkrts_enter_frame_df(__cilkrts_stack_frame *sf)
@@ -152,6 +155,7 @@ CILK_ABI_VOID __cilkrts_enter_frame_df(__cilkrts_stack_frame *sf)
     sf->reserved = 0;
     sf->flags |= CILK_FRAME_DATAFLOW;
     sf->call_parent->df_issue_child = sf;
+    sf->df_issue_me_ptr = &sf->call_parent->df_issue_child;
 }
 
 static inline
@@ -199,7 +203,7 @@ CILK_ABI_PENDING_PTR __cilkrts_pending_frame_create(size_t args_tags_size) {
 
     pf->args_tags = (void *)(((char *)pf)+pf_size);
 
-    printf("     __cilkrts_pending_frame_create - pf %p at=%p\n", pf, pf->args_tags); /*    */
+    /*    printf("     __cilkrts_pending_frame_create - pf %p at=%p\n", pf, pf->args_tags); */
 
     return pf;
 }
@@ -375,12 +379,62 @@ CILK_ABI_VOID __cilkrts_leave_frame(__cilkrts_stack_frame *sf)
 /*    DBGPRINTF("%d-%p __cilkrts_leave_frame - returning, StackBase: %p\n", w->self, GetWorkerFiber(w)); */
 }
 
+CILK_ABI_VOID
+__cilkrts_pop_frame_df(__cilkrts_stack_frame *sf, void (*release_fn)(void*)) {
+    sf->worker->current_stack_frame = sf->call_parent;
+    sf->call_parent = 0;
+
+    /* For a dataflow frame, check if the df_issue_child field in the
+     * parent stack frame is set to point to sf. If so, clear it. If it is set
+     * to 1, wait until it changes (to zero). If it is not equal to sf, this
+     * means that sf has been issued and so must be released.
+     * TODO: waiting for a value different from 1 to dis-appear may introduce
+     *       redundant waiting as all children trying to release will wait
+     *       for the issue of the last child, while they should only wait
+     *       on the issue of themselves.
+     *  FIX: set lowest order bit of df_issue_child to 1 while in progress
+     *       this way sf needs to wait only on sf|1.
+     *  TODO: reverse pointer during steal: from parent to most recent child?
+     *       PROBLEM: field may cease to exist without parent knowing...
+     */
+    if( sf->df_issue_me_ptr ) {
+	__cilkrts_stack_frame *to_issue
+	    = __sync_val_compare_and_swap(sf->df_issue_me_ptr, sf, 0);
+
+	__cilkrts_stack_frame *ts
+	    = (__cilkrts_stack_frame *)((uintptr_t)to_issue & ~(uintptr_t)1);
+
+	if( to_issue == sf ) {
+	    // Successfully canceled out an issue with a wakeup
+	} else { 
+	    if( ts == sf ) {
+		// Flag is set that issue is in progress. This is a close race.
+		// We just need to wait it out.
+		// to_issue is now equal to sf|1
+		do {
+		    ts = *sf->df_issue_me_ptr;
+		} while( ts == to_issue );
+	    }
+
+	    // Either we waited for the issue to complete, or to_issue was null
+	    // or equal to some other task pointer. Possibly, it could
+	    // also be a task pointer |1, indicating that task is being issued.
+	    // In these cases, the current task has been issued, so release it.
+	    (*release_fn)(sf->args_tags);
+	}
+    } else {
+	// This frame was created as a pending frame. As such issue has happened
+	// for sure. We need to release.
+	(*release_fn)(sf->args_tags);
+    }
+}
+
 /* Caller must have called setjmp. */
 CILK_ABI_VOID __cilkrts_sync(__cilkrts_stack_frame *sf)
 {
     __cilkrts_worker *w = sf->worker;
 /*    DBGPRINTF("%d-%p __cilkrts_sync - sf %p\n", w->self, GetWorkerFiber(w), sf); */
-    printf("%d-%p     __cilkrts_sync - sf %p\n", w->self, w, sf); /*    */
+    // printf("%d-%p     __cilkrts_sync - sf %p\n", w->self, w, sf); /*    */
     if (__builtin_expect(!(sf->flags & CILK_FRAME_UNSYNCHED), 0))
         __cilkrts_bug("W%u: double sync %p\n", w->self, sf);
 #ifndef _WIN32

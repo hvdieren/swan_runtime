@@ -235,13 +235,13 @@ static void unlink_child(full_frame *parent_ff, full_frame *child_ff)
 
 static void incjoin(__cilkrts_worker *w, full_frame *ff)
 {
-    printf( "%d-   incjoin %p when %d\n", w->self, ff, ff->join_counter );
+    // printf( "%d-   incjoin %p when %d\n", w->self, ff, ff->join_counter );
     ++ff->join_counter;
 }
 
 static int decjoin(__cilkrts_worker *w, full_frame *ff)
 {
-    printf( "%d-   decjoin %p when %d\n", w->self, ff, ff->join_counter );
+    // printf( "%d-   decjoin %p when %d\n", w->self, ff, ff->join_counter );
     CILK_ASSERT(ff->join_counter > 0);
     return (--ff->join_counter);
 }
@@ -729,7 +729,11 @@ static full_frame *make_child_from_pending(__cilkrts_worker *w,
 
     // Dataflow fields:
     sf->args_tags = child_pf->args_tags;
-    sf->df_issue_fn = (void *)0xdeadbeef; // task already issued
+    sf->df_issue_fn = (void *)0xdeadbeef; // already issued
+    sf->df_issue_child = 0; // used by children
+    sf->df_issue_me_ptr = 0; // this frame already issued
+    // Cannot retrieve exact pointer as sf->call_parent may be null
+    // Alternative: pass through pending_frame
 
     // __cilkrts_detach:
     {
@@ -744,8 +748,10 @@ static full_frame *make_child_from_pending(__cilkrts_worker *w,
         self->call_parent->parent_pedigree.rank = w->pedigree.rank;
         self->call_parent->parent_pedigree.parent = w->pedigree.parent;
         */
-        sf->spawn_helper_pedigree.rank = parent_ff->call_stack->parent_pedigree.rank;
-        sf->spawn_helper_pedigree.parent = parent_ff->call_stack->parent_pedigree.parent;
+        // sf->spawn_helper_pedigree.rank = parent_ff->call_stack->parent_pedigree.rank;
+        // sf->spawn_helper_pedigree.parent = parent_ff->call_stack->parent_pedigree.parent;
+        // sf->spawn_helper_pedigree.rank = child_pf->parent_pedigree.rank;
+        // sf->spawn_helper_pedigree.parent = child_pf->parent_pedigree.parent;
 
         w->pedigree.rank = 0;
         w->pedigree.parent = &sf->spawn_helper_pedigree;
@@ -762,8 +768,8 @@ static full_frame *make_child_from_pending(__cilkrts_worker *w,
     // Set call_stack
     child_ff->call_stack = sf;
 
-    printf( "%d: child_ff=%p call_stack=%p call_parent=%p fiber=%p\n", w->self,
-            child_ff, child_ff->call_stack, child_ff->call_stack->call_parent, fiber );
+    // printf( "%d: child_ff=%p call_stack=%p call_parent=%p fiber=%p\n", w->self,
+            // child_ff, child_ff->call_stack, child_ff->call_stack->call_parent, fiber );
 
     // incjoin(parent_ff); -- already done for pending_frame
     return child_ff;
@@ -865,7 +871,7 @@ static void detach_for_steal(__cilkrts_worker *w,
     parent_ff = victim->l->frame_ff;
     BEGIN_WITH_FRAME_LOCK(w, parent_ff) {
         /* parent no longer referenced by victim */
-        printf( "%d-   decjoin %p detach_for_steal\n", w->self, parent_ff );
+        // printf( "%d-   decjoin %p detach_for_steal\n", w->self, parent_ff );
         decjoin(w, parent_ff);
 
         /* obtain the victim call stack */
@@ -911,14 +917,29 @@ static void detach_for_steal(__cilkrts_worker *w,
         /* if the child frame has dataflow dependences and has not been
            issued yet to safe time on the fast path, then do it now. */
         if( sf->df_issue_child != 0 ) {
+            // __cilkrts_stack_frame * dfic_one
+		// = (__cilkrts_stack_frame *) ((uintptr_t)sf->df_issue_child | (uintptr_t)1);
+		// = (__cilkrts_stack_frame *)1;
+            // __cilkrts_stack_frame * to_issue
+                // = __sync_val_compare_and_swap( &sf->df_issue_child,
+                                               // sf->df_issue_child, dfic_one );
             __cilkrts_stack_frame * to_issue
-                = __sync_val_compare_and_swap( &sf->df_issue_child,
-                                               sf->df_issue_child, 0 );
+                = __sync_fetch_and_or( &sf->df_issue_child,
+                                       (__cilkrts_stack_frame *)1 );
+            __cilkrts_stack_frame * dfic_one
+		= (__cilkrts_stack_frame *) ((uintptr_t)to_issue | (uintptr_t)1);
+
             if( to_issue != 0 ) {
-                printf( "%d-   %p found df_issue_child: %p at: %p at[0]: %p\n", w->self, sf, to_issue, to_issue->args_tags, to_issue->args_tags ? *(long **)(to_issue->args_tags) : 0 );
+                // TODO: measure how often this occurs, e.g., using data_depN
+                //       micro-benchmark, as a function of task size.
+                // printf( "%d-   %p found df_issue_child: %p at: %p at[0]: %p | address: %p\n", w->self, sf, to_issue, to_issue->args_tags, to_issue->args_tags ? *(long **)(to_issue->args_tags) : 0, (long *)&sf->df_issue_child );
                 to_issue->flags |= CILK_FRAME_DATAFLOW_ISSUED;
                 (*to_issue->df_issue_fn)( 0, to_issue->args_tags );
+                // sf->df_issue_child = (__cilkrts_stack_frame *)0;
+                __sync_val_compare_and_swap( &sf->df_issue_child, dfic_one,
+                                             (__cilkrts_stack_frame *)0 );
             }
+            // printf( "%d-   %p finished df_issue_child: %p | address: %p\n", w->self, sf, sf->df_issue_child, (long *)&sf->df_issue_child );
         }
 
         // After this "push_next_frame" call, w now owns loot_ff.
@@ -954,7 +975,7 @@ static void steal_from_ready_list(__cilkrts_worker *w,
 
     w->l->team = victim->l->team;
 
-    printf( "%d: steal_from_ready_list victim=%d... team=%p\n", w->self, victim->self, w->l->team );
+    // printf( "%d: steal_from_ready_list victim=%d... team=%p\n", w->self, victim->self, w->l->team );
 
     CILK_ASSERT(w->l->frame_ff == 0 || w == victim);
 
@@ -965,7 +986,7 @@ static void steal_from_ready_list(__cilkrts_worker *w,
     if( NULL == victim->ready_list.head_next_ready_frame )
         victim->ready_list.tail = (__cilkrts_pending_frame *)&victim->ready_list.head_next_ready_frame;
 
-    printf( "%d: steal_from_ready_list stolen=%p args_tags=%p args[0]=%p next on RL: %p...\n", w->self, ready_pf, ready_pf->args_tags, *(long **)ready_pf->args_tags, victim->ready_list.head_next_ready_frame );
+    // printf( "%d: steal_from_ready_list stolen=%p args_tags=%p args[0]=%p next on RL: %p...\n", w->self, ready_pf, ready_pf->args_tags, *(long **)ready_pf->args_tags, victim->ready_list.head_next_ready_frame );
 
     /* Convert the pending frame to a full frame */
     parent_ff = ready_pf->frame_ff->parent;
@@ -993,7 +1014,7 @@ static void steal_from_ready_list(__cilkrts_worker *w,
     /* Destroy pending frame ... oops - need args_tags for call and release */
     /* TODO: Trick: pass pending_frame in to call_helper which frees it when done :)
      * But if you do that, you might as well make pending_fr as large as full_fr */
-    printf( "%d: steal_from_ready_list: %p sf=%p args_tags=%p args[0]=%p args[1]=%p @%p\n", w->self, loot_ff, loot_ff->call_stack, loot_ff->call_stack->args_tags, ((long **)loot_ff->call_stack->args_tags)[0], ((long **)loot_ff->call_stack->args_tags)[1], &((long **)loot_ff->call_stack->args_tags)[1] );
+    // printf( "%d: steal_from_ready_list: %p sf=%p args_tags=%p args[0]=%p args[1]=%p @%p\n", w->self, loot_ff, loot_ff->call_stack, loot_ff->call_stack->args_tags, ((long **)loot_ff->call_stack->args_tags)[0], ((long **)loot_ff->call_stack->args_tags)[1], &((long **)loot_ff->call_stack->args_tags)[1] );
 }
 
 /**
@@ -1018,7 +1039,7 @@ void fiber_proc_to_resume_user_code_for_random_steal(cilk_fiber *fiber)
     __cilkrts_stack_frame* sf = data->resume_sf;
     full_frame *ff;
 
-    printf( "\nresume for random fiber=%p\n\n", fiber );
+    // printf( "\nresume for random fiber=%p\n\n", fiber );
 
     CILK_ASSERT(sf);
 
@@ -1080,7 +1101,7 @@ void fiber_proc_to_resume_user_code_for_pending_steal(cilk_fiber *fiber)
     __cilkrts_stack_frame* sf = data->resume_sf;
     full_frame *ff;
 
-    printf( "\n%d-   resume for pending fiber=%p\n\n", sf->worker->self, fiber );
+    // printf( "\n%d-   resume for pending fiber=%p\n\n", sf->worker->self, fiber );
 
     // When we pull the resume_sf out of the fiber to resume it, clear
     // the old value.
@@ -1212,7 +1233,7 @@ static void random_steal(__cilkrts_worker *w)
             victim_id = victim->self;
             success = 1;
             stolen_from_ready_list = 1;
-            printf( "%d: stolen from ready list\n", w->self );
+            // printf( "%d: stolen from ready list\n", w->self );
             // Should ready list be an array with pointers? Makes it easier
             // to steal half - need to know number of tasks on ready_list.
             //
@@ -1286,7 +1307,7 @@ static void random_steal(__cilkrts_worker *w)
     }
     else
     {
-        printf( "%d: stolen_from_ready_list: %d ff=%p\n", w->self, stolen_from_ready_list, w->l->frame_ff );
+        // printf( "%d: stolen_from_ready_list: %d ff=%p\n", w->self, stolen_from_ready_list, w->l->frame_ff );
         // Since our steal was successful, finish initialization of
         // the fiber.
         if( !stolen_from_ready_list )
@@ -1358,7 +1379,7 @@ enum provably_good_steal_t provably_good_steal(__cilkrts_worker *w,
 
     enum provably_good_steal_t result = ABANDON_EXECUTION;
 
-    printf( "%d-    Attempting provably_good_steal ff=%p join=%d\n", w->self, ff, ff->join_counter );
+    // printf( "%d-    Attempting provably_good_steal ff=%p join=%d\n", w->self, ff, ff->join_counter );
 
     // If the current replay entry is a sync record matching the worker's
     // pedigree, AND this isn't the last child to the sync, return
@@ -1369,7 +1390,7 @@ enum provably_good_steal_t provably_good_steal(__cilkrts_worker *w,
         return WAIT_FOR_CONTINUE;
 
     START_INTERVAL(w, INTERVAL_PROVABLY_GOOD_STEAL) {
-        printf( "%d-   decjoin %p provably_good_steal\n", w->self, ff );
+        // printf( "%d-   decjoin %p provably_good_steal\n", w->self, ff );
         if (decjoin(w, ff) == 0) {
             provably_good_steal_reducers(w, ff);
             provably_good_steal_exceptions(w, ff);
@@ -1420,7 +1441,7 @@ static void unconditional_steal(__cilkrts_worker *w,
     // ASSERT: we hold ff->lock
 
     START_INTERVAL(w, INTERVAL_UNCONDITIONAL_STEAL) {
-        printf( "%d-   decjoin %p unconditional_steal\n", w->self, ff );
+        // printf( "%d-   decjoin %p unconditional_steal\n", w->self, ff );
         decjoin(w, ff);
         __cilkrts_push_next_frame(w, ff);
     } STOP_INTERVAL(w, INTERVAL_UNCONDITIONAL_STEAL);
@@ -1784,7 +1805,7 @@ static void enter_runtime_transition_proc(cilk_fiber *fiber)
 static inline NORETURN
 cilkrts_resume(__cilkrts_stack_frame *sf, full_frame *ff)
 {
-    printf( "cilkrts_resume sf=%p ff=%p\n", sf, ff );
+    // printf( "cilkrts_resume sf=%p ff=%p\n", sf, ff );
     // Save the sync stack pointer, and do the bookkeeping
     char* sync_sp = ff->sync_sp;
     __cilkrts_take_stack(ff, sync_sp);  // leaves ff->sync_sp null
@@ -2027,7 +2048,7 @@ static full_frame* check_for_work(__cilkrts_worker *w)
                     // At this point, the worker knows for certain that it has
                     // run out of work.  Therefore, it loses its team
                     // affiliation.  User workers never change teams, of course.
-                    printf( "%d-   team from %p to NULL\n", w->self, w->l->team );
+                    // printf( "%d-   team from %p to NULL\n", w->self, w->l->team );
                     w->l->team = NULL;
                 }
                 __cilkrts_worker_unlock(w);
@@ -2728,7 +2749,7 @@ static void do_return_from_spawn(__cilkrts_worker *w,
         parent_ff = ff->parent;
     
         BEGIN_WITH_FRAME_LOCK(w, ff) {
-            printf( "%d-   decjoin %p do_return_from_spawn\n", w->self, ff );
+            // printf( "%d-   decjoin %p do_return_from_spawn\n", w->self, ff );
             decjoin(w, ff);
         } END_WITH_FRAME_LOCK(w, ff);
 
@@ -2855,7 +2876,7 @@ void __cilkrts_return(__cilkrts_worker *w)
             // Technically, w will "own" ff until ff is freed,
             // however, because ff is a dying leaf full frame.
             parent_ff = disown(w, ff, 0, "return");
-            printf( "%d-   decjoin %p __cilkrts_return\n", w->self, ff );
+            // printf( "%d-   decjoin %p __cilkrts_return\n", w->self, ff );
             decjoin(w, ff);
 
 #ifdef _WIN32

@@ -10,7 +10,6 @@
 
 // Includes stdint.h
 #include "cilk/common.h"
-// #include "internal/abi.h"
 #include "cilk/../../runtime/spin_mutex.h"
 
 #ifdef __cplusplus
@@ -100,9 +99,9 @@ void __cilkrts_obj_metadata_add_task(
 
 void __cilkrts_obj_version_init( __cilkrts_obj_version *v,
 				 const __cilkrts_obj_traits *traits );
-__CILKRTS_INLINE
+// __CILKRTS_INLINE
 void __cilkrts_obj_version_add_ref( __cilkrts_obj_version *v );
-__CILKRTS_INLINE
+// __CILKRTS_INLINE
 void __cilkrts_obj_version_del_ref( __cilkrts_obj_version *v );
 void __cilkrts_obj_version_destroy( __cilkrts_obj_version *v );
 
@@ -156,7 +155,7 @@ private:
     }
 };
 
-template<typename Value>
+template<typename Value, typename = void>
 struct object_traits {
     /** Value type of the object
      */
@@ -168,7 +167,32 @@ struct object_traits {
 	new (reinterpret_cast<value_type *>(v)) value_type();
     }
     static void destroy_wrapper( void *payload, void *v ) {
-	reinterpret_cast<value_type *>(v)->~value_type();
+	// TODO: reinterpret_cast<value_type *>(v)->~value_type();
+    }
+    static void* allocate_wrapper( /*__STDNS*/ size_t size ) {
+	return operator new(size);
+    }
+    static void deallocate_wrapper( void *payload ) {
+	// In std::allocator terms, this is underlying free()
+	// operator delete(payload);
+    }
+};
+
+#if 0
+template<typename Value,
+	 typename std::enable_if<std::is_array<Value>::value>::type>
+struct object_traits {
+    /** Value type of the object
+     */
+    typedef Value value_type;
+
+    static constexpr /*__STDNS*/ size_t size = sizeof(value_type);
+
+    static void initialize_wrapper( void *payload, void *v ) {
+	new (reinterpret_cast<value_type *>(v)) value_type();
+    }
+    static void destroy_wrapper( void *payload, void *v ) {
+	// reinterpret_cast<value_type *>(v)->~value_type();
     }
     static void* allocate_wrapper( /*__STDNS*/ size_t size ) {
 	return operator new(size);
@@ -177,6 +201,8 @@ struct object_traits {
 	operator delete(payload);
     }
 };
+#endif
+
 
 template<typename Value>
 class object_version {
@@ -206,7 +232,7 @@ private:
 	traits->initialize_fn(
 	    v.payload,
 	    reinterpret_cast<void *>( const_cast<value_type *>( &val ) ) );
-	printf( "object_version construct: %p meta %p 1\n", this, &v.meta );
+	// printf( "object_version construct: %p meta %p 1\n", this, &v.meta );
     }
     object_version( instance_type * obj_, const value_type &val ) {
 	static const __cilkrts_obj_traits traits = {
@@ -220,7 +246,7 @@ private:
 	traits.initialize_fn(
 	    v.payload,
 	    reinterpret_cast<void *>( const_cast<value_type *>( &val ) ) );
-	printf( "object_version construct: %p meta %p 2\n", this, &v.meta );
+	// printf( "object_version construct: %p meta %p 2\n", this, &v.meta );
     }
     object_version( instance_type * obj_ ) {
 	static const __cilkrts_obj_traits traits = {
@@ -235,7 +261,7 @@ private:
 	traits.initialize_fn(
 	    v.payload,
 	    reinterpret_cast<void *>( const_cast<value_type *>( &val ) ) );
-	printf( "object_version construct: %p meta %p 2\n", this, &v.meta );
+	// printf( "object_version construct: %p meta %p 3\n", this, &v.meta );
     }
 
 
@@ -261,9 +287,12 @@ public:
 private:
     // obj_instance<object_metadata> * get_instance() const { return obj; }
 
-    // object_metadata * get_metadata() { return &meta; }
-    // const object_metadata * get_metadata() const { return &meta; }
+    // tmp
+public:
+    __cilkrts_obj_metadata * get_metadata() { return &v.meta; }
+    const __cilkrts_obj_metadata * get_metadata() const { return &v.meta; }
 
+private:
     void add_ref() { __sync_fetch_and_add( &v.refcnt, 1 ); } // atomic!
     void del_ref() {
 	__CILKRTS_ASSERT( v.refcnt > 0 );
@@ -316,7 +345,7 @@ public:
     const value_type &get_value() const throw() {
 	return object_payload<value_type>::get_value( v.payload );
     }
-    value_type get_value() throw() {
+    value_type &get_value() throw() {
 	return object_payload<value_type>::get_value( v.payload );
     }
 
@@ -360,7 +389,7 @@ public: // tmp
 
 public:
     const value_type &get_value() const throw() { return v->get_value(); }
-    value_type get_value() throw() { return v->get_value(); }
+    value_type &get_value() throw() { return v->get_value(); }
 
     void set_value(const value_type &v) { v->set_value( v ); }
 /*
@@ -518,7 +547,10 @@ private:
 
 public:
     inoutdep( const versioned<value_type> & v_ ) throw()
-	: inoutdep( v_.get_version() ) { }
+	: inoutdep( v_.get_version() ) {
+	// printf( "inoutdep create this=%p w/ v=%p from %p\n", this, v_.get_version(), &v_ );
+	assert( (intptr_t(instance_type::get_version()) & intptr_t(1)) == 0 );
+    }
 
     /** Signature function to assertain this is a versioned object.
      */

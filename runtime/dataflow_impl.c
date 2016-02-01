@@ -42,6 +42,7 @@ void __cilkrts_obj_metadata_wakeup_hard(
 	    = (struct __cilkrts_pending_frame *)
 	    ((uintptr_t)i->st_task_and_last & ~(uintptr_t)(1));
 	++new_tasks;
+assert( new_tasks < 10000 ); // RM
 	i_next = i->it_next;
 	if( __sync_fetch_and_add( &t->incoming_count, -1 ) == 1 ) {
 	    // TODO: push in front for convenience -- revise
@@ -50,6 +51,7 @@ void __cilkrts_obj_metadata_wakeup_hard(
 	    rlist->tail->next_ready_frame = t;
 	    rlist->tail = t;
 	}
+assert( t->incoming_count < 10000 ); // RM
 	// if( i->is_last_in_generation() )
 	if( ((uintptr_t)i->st_task_and_last & (uintptr_t)(1)) != 0 )
 	    break;
@@ -81,21 +83,21 @@ void __cilkrts_obj_metadata_wakeup_hard(
     }
 
     // assert( (youngest.has_tasks() == (num_gens > 0)) && "tasks require gens" );
-    // printf( "wakeup end hard meta=%p {yg=%d, ng=%d, ont=%d}\n", meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
+    // printf( "%d-%p: wakeup end hard meta=%p {yg=%d, ng=%d, ont=%d} nt=%d\n", __cilkrts_get_tls_worker()->self, (void*)0, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks, new_tasks );
     spin_mutex_unlock(&meta->mutex);
 }
 
 void __cilkrts_obj_metadata_wakeup(
     __cilkrts_ready_list *rlist, __cilkrts_obj_metadata *meta) {
     spin_mutex_lock( &meta->mutex );
-    // printf( "wakeup begin meta=%p {yg=%d, ng=%d, ont=%d} \n", meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
+    // printf( "%d-%p: wakeup begin meta=%p {yg=%d, ng=%d, ont=%d} \n", __cilkrts_get_tls_worker()->self, (void*)0, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
     if( --meta->oldest_num_tasks > 0 ) {
-	// printf( "wakeup end ont>0 meta=%p {yg=%d, ng=%d, ont=%d} \n", meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
+	// printf( "%d-%p: wakeup end ont>0 meta=%p {yg=%d, ng=%d, ont=%d} \n", __cilkrts_get_tls_worker()->self, (void*)0, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
 	spin_mutex_unlock( &meta->mutex );
     } else if( meta->num_gens == 1 ) {
 	meta->num_gens = 0;
 	meta->youngest_group = CILK_OBJ_GROUP_EMPTY;
-	// printf( "wakeup end ng=1 meta=%p {yg=%d, ng=%d, ont=%d}\n", meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
+	// printf( "%d-%p: wakeup end ng=1 meta=%p {yg=%d, ng=%d, ont=%d}\n", __cilkrts_get_tls_worker()->self, (void*)0, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks );
 	spin_mutex_unlock( &meta->mutex );
     } else
 	__cilkrts_obj_metadata_wakeup_hard(rlist, meta);
@@ -121,6 +123,7 @@ void __cilkrts_obj_metadata_add_task_write(
 //       Could it avoid the lock?
 //       Alternatively, add argument 'is_running', do an if() on it and
 //       hope inlining and constant propagation will do their work.
+//       t==0 tells you the same...
 void __cilkrts_obj_metadata_add_task(
     __cilkrts_pending_frame *t, __cilkrts_obj_metadata *meta,
     __cilkrts_task_list_node *tags, int g) {
@@ -130,7 +133,7 @@ void __cilkrts_obj_metadata_add_task(
     // Fully mutual exclusion to avoid races
     spin_mutex_lock( &meta->mutex );
 
-    // printf( "add_task begin t=%p meta=%p {yg=%d, ng=%d, ont=%d} tags=%p g=%d\n", t, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks, tags, g );
+    // printf( "%d-%p: add_task begin t=%p meta=%p {yg=%d, ng=%d, ont=%d} tags=%p g=%d\n", __cilkrts_get_tls_worker()->self, (void*)0, t, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks, tags, g );
 
     int joins = ( meta->youngest_group & ((g | CILK_OBJ_GROUP_EMPTY)
 					  & CILK_OBJ_GROUP_NOT_WRITE ) ) != 0;
@@ -142,7 +145,9 @@ void __cilkrts_obj_metadata_add_task(
     // TODO: in CS, so non-atomic suffices?
     // __sync_fetch_and_add( &meta->num_gens, (uint32_t)pushg );
     meta->num_gens += (uint32_t)pushg;
+assert( meta->num_gens < 10000 ); // RM
     meta->oldest_num_tasks += ready;
+assert( meta->oldest_num_tasks < 10000 ); // RM
     // youngest.open_group( g ); // redundant if joins == true
     meta->youngest_group = g;
     
@@ -157,6 +162,7 @@ void __cilkrts_obj_metadata_add_task(
 	tags->it_next = 0;
 	old_tail->it_next = tags;
 	// old_tail->set_last_in_generation( pushg );
+	// TODO: the bit should not be set, should it? Remove "& ~1" part
 	old_tail->st_task_and_last =
 	    (__cilkrts_pending_frame *)
 	    ( ( (uintptr_t)old_tail->st_task_and_last & ~(uintptr_t)1 )
@@ -164,9 +170,10 @@ void __cilkrts_obj_metadata_add_task(
 	meta->tasks.tail = tags;
     }
 
+    __CILKRTS_ASSERT( (meta->num_gens <= 1) == (meta->tasks.head.it_next == 0) );
     __CILKRTS_ASSERT( meta->num_gens > 0 );
 
-    // printf( "add_task end t=%p meta=%p {yg=%d, ng=%d, ont=%d} tags=%p g=%d\n", t, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks, tags, g );
+    // printf( "%d-%p: add_task end t=%p meta=%p {yg=%d, ng=%d, ont=%d} tags=%p g=%d\n", __cilkrts_get_tls_worker()->self, (void*)0, t, meta, meta->youngest_group, meta->num_gens, meta-> oldest_num_tasks, tags, g );
 
     spin_mutex_unlock( &meta->mutex );
 }
@@ -194,7 +201,7 @@ __CILKRTS_INLINE
 __cilkrts_obj_payload * __cilkrts_obj_payload_create(
     const __cilkrts_obj_traits *traits ) {
     __cilkrts_obj_payload *pl
-	= (*traits->allocate_fn)( sizeof(__cilkrts_obj_payload) + sizeof(traits->size) );
+	= (*traits->allocate_fn)( sizeof(__cilkrts_obj_payload) + traits->size );
     pl->traits = *traits;
     pl->refcnt = 1;
     pl->offset = sizeof(*pl);
@@ -227,25 +234,28 @@ void __cilkrts_obj_payload_del_ref( __cilkrts_obj_payload *pl ) {
 
 void __cilkrts_obj_version_init( __cilkrts_obj_version *v,
 				 const __cilkrts_obj_traits *traits ) {
-    fprintf(stderr, "init obj_version %p\n", v);
     __cilkrts_obj_metadata_init( &v->meta );
     v->refcnt = 1;
     v->payload = __cilkrts_obj_payload_create( traits );
+    // fprintf(stderr, "%d-%p: init obj_version %p meta %p payload %p data @ %p data size: %ld\n",
+    // __cilkrts_get_tls_worker() ? __cilkrts_get_tls_worker()->self : 0, (void*)0, v, &v->meta, v->payload, __cilkrts_obj_payload_get_ptr( v->payload ), traits->size );
 }
 
-__CILKRTS_INLINE
+// __CILKRTS_INLINE
 void __cilkrts_obj_version_add_ref( __cilkrts_obj_version *v ) {
+    // printf( "%d-%p: version_add_ref v=%p refcnt before=%d\n", __cilkrts_get_tls_worker()->self, (void*)0, v, v->refcnt );
     __sync_fetch_and_add( &v->refcnt, 1 );
 }
 
-__CILKRTS_INLINE
+/* __CILKRTS_INLINE */
 void __cilkrts_obj_version_del_ref( __cilkrts_obj_version *v ) {
+    // printf( "%d-%p: version_del_ref v=%p refcnt before=%d\n", __cilkrts_get_tls_worker()->self, (void*)0, v, v->refcnt );
     if( __sync_fetch_and_add( &v->refcnt, -1 ) == 1 )
 	__cilkrts_obj_version_destroy( v );
 }
 
 void __cilkrts_obj_version_destroy( __cilkrts_obj_version *v ) {
-    fprintf(stderr, "destroy obj_version %p\n", v);
+    // fprintf(stderr, "%d-%p: destroy obj_version %p\n", __cilkrts_get_tls_worker()->self, (void*)0, v);
     __CILKRTS_ASSERT( v->refcnt == 0
 		      && "__cilkrts_obj_version: non-zero reference count" );
     __cilkrts_obj_payload_del_ref( v->payload );

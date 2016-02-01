@@ -416,10 +416,17 @@ struct __cilkrts_stack_frame
     char * args_tags;
 
     /**
-     * Child stack frame with dataflow dependences that must be issued when
-     * current stack frame is stolen.
+     * Child stack frame with dataflow dependences that must be issued and
+     * released when current stack frame is stolen.
      */
     __cilkrts_stack_frame * df_issue_child;
+
+    /**
+     * If this stack frame has dataflow dependences, this pointer points to
+     * the df_issue_child field in the parent stack frame in order to
+     * synchronise with other workers on whether to issue+release or not.
+     */
+    __cilkrts_stack_frame ** df_issue_me_ptr;
 #endif /* __CILKRTS_ABI_VERSION >= 2 */
 };
 
