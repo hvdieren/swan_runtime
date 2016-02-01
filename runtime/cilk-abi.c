@@ -401,12 +401,12 @@ __cilkrts_pop_frame_df(__cilkrts_stack_frame *sf, void (*release_fn)(void*)) {
 	__cilkrts_stack_frame *to_issue
 	    = __sync_val_compare_and_swap(sf->df_issue_me_ptr, sf, 0);
 
-	__cilkrts_stack_frame *ts
-	    = (__cilkrts_stack_frame *)((uintptr_t)to_issue & ~(uintptr_t)1);
-
 	if( to_issue == sf ) {
 	    // Successfully canceled out an issue with a wakeup
 	} else { 
+	    __cilkrts_stack_frame *ts
+		= (__cilkrts_stack_frame *)((uintptr_t)to_issue & ~(uintptr_t)1);
+
 	    if( ts == sf ) {
 		// Flag is set that issue is in progress. This is a close race.
 		// We just need to wait it out.
