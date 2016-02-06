@@ -5,6 +5,9 @@
 #include "internal/dataflow_abi.h"
 #include "internal/abi.h"
 #include "spin_mutex.h"
+#include "scheduler.h"
+// worker lock check
+#include "local_state.h"
 
 __CILKRTS_INLINE
 void __cilkrts_task_list_init(__cilkrts_task_list *tl) {
@@ -42,7 +45,6 @@ void __cilkrts_obj_metadata_wakeup_hard(
 	    = (struct __cilkrts_pending_frame *)
 	    ((uintptr_t)i->st_task_and_last & ~(uintptr_t)(1));
 	++new_tasks;
-assert( new_tasks < 10000 ); // RM
 	i_next = i->it_next;
 	if( __sync_fetch_and_add( &t->incoming_count, -1 ) == 1 ) {
 	    // TODO: push in front for convenience -- revise
@@ -51,7 +53,6 @@ assert( new_tasks < 10000 ); // RM
 	    rlist->tail->next_ready_frame = t;
 	    rlist->tail = t;
 	}
-assert( t->incoming_count < 10000 ); // RM
 	// if( i->is_last_in_generation() )
 	if( ((uintptr_t)i->st_task_and_last & (uintptr_t)(1)) != 0 )
 	    break;
@@ -179,22 +180,23 @@ void __cilkrts_obj_metadata_add_task(
     spin_mutex_unlock( &meta->mutex );
 }
 
-
 void __cilkrts_obj_metadata_add_pending_to_ready_list(
     __cilkrts_worker *w, __cilkrts_pending_frame *pf) {
+    __cilkrts_worker_lock(w);
     pf->next_ready_frame = 0;
     w->ready_list.tail->next_ready_frame = pf;
     w->ready_list.tail = pf;
+    __cilkrts_worker_unlock(w);
 }
 
 void __cilkrts_move_to_ready_list(
     __cilkrts_worker *w, __cilkrts_ready_list *rlist) {
-    // TODO: only makes sense if wakeup not under worker lock.
-    //       also need to acquire worker lock here.
     if( 0 != rlist->head_next_ready_frame ) {
+	__cilkrts_worker_lock(w);
 	w->ready_list.tail->next_ready_frame
 	    = rlist->head_next_ready_frame;
 	w->ready_list.tail = rlist->tail;
+	__cilkrts_worker_unlock(w);
     }
 }
 
