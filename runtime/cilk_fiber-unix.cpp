@@ -89,7 +89,7 @@ __cilkrts_stack_frame* cilk_fiber_allocate_stack_frame(cilk_fiber* fiber) {
 
 __cilkrts_stack_frame *
 cilk_fiber_sysdep::allocate_stack_frame() {
-    m_stack_base -= sizeof( __cilkrts_stack_frame );
+    m_stack_base = m_stack_max - sizeof( __cilkrts_stack_frame );
     const uintptr_t align_mask = 32 - 1;
     m_stack_base -= ((std::size_t) m_stack_base) & align_mask;
     return (__cilkrts_stack_frame*)m_stack_base;
@@ -203,12 +203,6 @@ NORETURN cilk_fiber_sysdep::run()
     CILK_ASSERT(m_start_proc);
     CILK_ASSERT(!this->is_allocated_from_thread());
     CILK_ASSERT(!this->is_resumable());
-
-    // This is dangerous: this operation deallocates a previously allocated
-    // stack frame. It is assumed that only one stack frame can be allocated
-    // on any fiber/stack at a time through this interface, designed for
-    // pending frames specifically.
-    m_stack_base = m_stack_max;
 
     // TBD: This setjmp/longjmp pair simply changes the stack pointer.
     // We could probably replace this code with some assembly.
