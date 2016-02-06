@@ -933,6 +933,7 @@ static void detach_for_steal(__cilkrts_worker *w,
                 // TODO: measure how often this occurs, e.g., using data_depN
                 //       micro-benchmark, as a function of task size.
                 // printf( "%d-   %p found df_issue_child: %p at: %p at[0]: %p | address: %p\n", w->self, sf, to_issue, to_issue->args_tags, to_issue->args_tags ? *(long **)(to_issue->args_tags) : 0, (long *)&sf->df_issue_child );
+                // CILK_ASSERT( to_issue->flags & CILK_FRAME_DATAFLOW );
                 to_issue->flags |= CILK_FRAME_DATAFLOW_ISSUED;
                 (*to_issue->df_issue_fn)( 0, to_issue->args_tags );
                 // sf->df_issue_child = (__cilkrts_stack_frame *)0;
@@ -1129,15 +1130,9 @@ void fiber_proc_to_resume_user_code_for_pending_steal(cilk_fiber *fiber)
     size_t ff_size = ( sizeof(full_frame) + align - 1 ) & ~(align-1);
     __cilkrts_pending_frame * pf
         = (__cilkrts_pending_frame *)(((char *)ff)+ff_size);
+    // CILK_ASSERT( ff->alloc_size > sizeof(*ff) ); // it has a pending frame
+    // CILK_ASSERT( sf->flags & CILK_FRAME_DATAFLOW );
     (*pf->call_fn)( sf );
-
-    // __cilkrts_pop_frame( sf ); -- inlined
-    struct __cilkrts_worker *w = sf->worker;
-    w->current_stack_frame = sf->call_parent;
-    sf->call_parent = 0;
-    // if (sf->flags) -- for sure
-    __cilkrts_leave_frame( sf );
-
     CILK_ASSERT( !"Should not reach this - after initiating pending frame" );
 }
 
