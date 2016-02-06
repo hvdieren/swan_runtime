@@ -290,7 +290,7 @@ CILK_ABI_VOID __cilkrts_leave_frame(__cilkrts_stack_frame *sf)
 {
     __cilkrts_worker *w = sf->worker;
 
-    DBGPRINTF("%d-%p __cilkrts_leave_frame - sf %p, flags: %x\n", w->self, w, sf, sf->flags); /*    */
+    /*    DBGPRINTF("%d-%p __cilkrts_leave_frame - sf %p, flags: %x\n", w->self, w, sf, sf->flags); */
 
 #ifdef _WIN32
     /* if leave frame was called from our unwind handler, leave_frame should
@@ -396,6 +396,14 @@ __cilkrts_pop_frame_df(__cilkrts_stack_frame *sf, void (*release_fn)(void*)) {
      *       this way sf needs to wait only on sf|1.
      *  TODO: reverse pointer during steal: from parent to most recent child?
      *       PROBLEM: field may cease to exist without parent knowing...
+     */
+
+    /* This code aligns with the undo_detach race and could be moved into
+     * __cilkrts_c_THE_exception_check. The goal of moving it there would be
+     * also to remove the CAS on both sides, although that is not obvious
+     * because each racing thread has 2 actions: steal+issue vs undo+release
+     * and we synchronise only on the steal-undo pair, but need additional
+     * synchronization on the issue-release pair.
      */
     if( sf->df_issue_me_ptr ) {
 	__cilkrts_stack_frame *to_issue
