@@ -277,10 +277,11 @@ static int __cilkrts_undo_detach(__cilkrts_stack_frame *sf)
        second branch of the #if should be faster, but on
        most x86 it is not.  */
 #if defined __i386__ || defined __x86_64__
-    __sync_fetch_and_and(&sf->flags, ~(CILK_FRAME_DETACHED|CILK_FRAME_DATAFLOW));
+    __sync_fetch_and_and(&sf->flags,
+			 ~(CILK_FRAME_DETACHED|CILK_FRAME_DATAFLOW|CILK_FRAME_DATAFLOW_ISSUED));
 #else
     __cilkrts_fence(); /* membar #StoreLoad */
-    sf->flags &= ~(CILK_FRAME_DETACHED|CILK_FRAME_DATAFLOW);
+    sf->flags &= ~(CILK_FRAME_DETACHED|CILK_FRAME_DATAFLOW|CILK_FRAME_DATAFLOW_ISSUED);
 #endif
 
     return __builtin_expect(t < w->exc, 0);
