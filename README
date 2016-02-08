@@ -1,4 +1,10 @@
+Swan runtime library, based on the
 Intel(R) Cilk(TM) Plus runtime library
+
+This runtime library supports Swan, a Cilk extension with dataflow
+dependencies. The remainder of this README is unmodified as the
+default build instructions apply. Use in conjunction with
+the Clang compiler at github.com/hvdieren/swan_clang
 
 Index:
 1. BUILDING
