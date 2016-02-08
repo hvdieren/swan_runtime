@@ -732,6 +732,9 @@ static full_frame *make_child_from_pending(__cilkrts_worker *w,
     sf->df_issue_fn = (void *)0xdeadbeef; // already issued
     sf->df_issue_child = 0; // used by children
     sf->df_issue_me_ptr = 0; // this frame already issued
+
+    child_pf->args_tags = (void *)0; // clear to avoid double issue
+
     // Cannot retrieve exact pointer as sf->call_parent may be null
     // Alternative: pass through pending_frame
 
@@ -2475,8 +2478,6 @@ NORETURN __cilkrts_c_sync(__cilkrts_worker *w,
     // and entered the runtime (because it stalls), w's deque is empty
     // and no one else can steal and change w->l->frame_ff.
 
-    CILK_ASSERT(w); // tmp
-    CILK_ASSERT(w->l); // tmp
     ff = w->l->frame_ff;
 #ifdef _WIN32
     __cilkrts_save_exception_state(w, ff);
@@ -2641,6 +2642,7 @@ void __cilkrts_c_THE_exception_check(__cilkrts_worker *w,
     BEGIN_WITH_WORKER_LOCK(w) {
         ff = w->l->frame_ff;
         CILK_ASSERT(ff);
+
         /* This code is called only upon a normal return and never
            upon an exceptional return.  Assert that this is the
            case. */
