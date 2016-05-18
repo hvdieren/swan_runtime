@@ -901,13 +901,19 @@ __cilkrts_save_fp_ctrl_state(__cilkrts_stack_frame *sf)
 }
 
 #include <sched.h>
+#if !defined(__APPLE__)
 #include <numa.h>
 #include <errno.h>
 #include <string.h>
+#endif
 
 CILK_ABI(int32_t)
 __cilkrts_get_worker_numa(__cilkrts_worker *w)
 {
+#if defined(__APPLE__)
+    // Testing purposes only
+    return w->self;
+#else
     int cpu = sched_getcpu();
     if( cpu < 0 ) { // Error, errno explains what
 	fprintf( stderr, "getcpu() error: %d: %s\n", errno, strerror(errno) );
@@ -920,6 +926,7 @@ __cilkrts_get_worker_numa(__cilkrts_worker *w)
     }
     // printf( "NUMA? w=%d cpu=%d node=%d\n", w->self, cpu, node );
     return node;
+#endif
 }
 
 /* end cilk-abi.c */
