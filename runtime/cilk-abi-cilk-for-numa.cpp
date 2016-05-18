@@ -79,9 +79,16 @@
 extern "C" {
 
 /*
- * Compiler-generate helper routine.
+ * Compiler-generated helper routines.
+ * Assign distinct name to avoid triggering a bug in clang/opt related
+ * to incompatible argument types on clang's internal __cilkrts_stack_frame
+ * type vs. the type used in source code.
+ *
+ * FIXME: use capture_spawn_arg_stack_frame to update the NUMA settings
+ *        on the stack frame. That would allow the use of _Cilk_spawn and
+ *        avoid the replication of the routines below
  */
-void __cilkrts_detach(struct __cilkrts_stack_frame *self) {
+void __cilkrts_inline_detach(struct __cilkrts_stack_frame *self) {
     struct __cilkrts_worker *w = self->worker;
     struct __cilkrts_stack_frame *parent = self->call_parent;
     struct __cilkrts_stack_frame *volatile *tail = w->tail;
@@ -104,7 +111,7 @@ void __cilkrts_detach(struct __cilkrts_stack_frame *self) {
     self->flags |= CILK_FRAME_DETACHED;
 }
 
-void __cilkrts_pop_frame(struct __cilkrts_stack_frame *sf) {
+void __cilkrts_inline_pop_frame(struct __cilkrts_stack_frame *sf) {
     struct __cilkrts_worker *w = sf->worker;
     w->current_stack_frame = sf->call_parent;
     sf->call_parent = 0;
@@ -354,7 +361,7 @@ tail_recurse:
 	    __cilkrts_sync( &cc_sf );
     }
 
-    __cilkrts_pop_frame(&cc_sf);
+    __cilkrts_inline_pop_frame(&cc_sf);
     if( cc_sf.flags )
 	__cilkrts_leave_frame(&cc_sf);
 }
@@ -373,7 +380,7 @@ void cilk_for_numa_recursive_spawn_helper(count_t low, count_t high,
 {
     __cilkrts_stack_frame sf;
     __cilkrts_enter_frame_1(&sf);
-    __cilkrts_detach(&sf);
+    __cilkrts_inline_detach(&sf);
     sf.flags |= CILK_FRAME_NUMA; // should be narrowing? _detach_numa(&sf,lo,hi)
     sf.numa_low = low;
     sf.numa_high = high;
@@ -382,7 +389,7 @@ void cilk_for_numa_recursive_spawn_helper(count_t low, count_t high,
     cilk_for_numa_recursive<count_t,F>(low, high, body, data, grain,
 				       w, loop_root_pedigree);
 
-    __cilkrts_pop_frame(&sf);
+    __cilkrts_inline_pop_frame(&sf);
     if(sf.flags)
 	__cilkrts_leave_frame(&sf);
 }
