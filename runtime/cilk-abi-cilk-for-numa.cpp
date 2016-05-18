@@ -57,6 +57,8 @@
 #include "internal/abi.h"
 #include "metacall_impl.h"
 #include "global_state.h"
+#include <stdio.h> // TODO: remove
+#include <assert.h> // TODO: remove
 
 // Icky macros to determine if we're compiled with optimization.  Based on
 // the declaration of __CILKRTS_ASSERT in common.h
@@ -74,46 +76,44 @@
 # endif
 #endif
 
-template <typename count_t>
-static inline int grainsize(int req, count_t count)
-{
-    // A positive requested grain size comes from the user.  A very high grain
-    // size risks losing parallelism, but the user told us what they want for
-    // grainsize.  Who are we to argue?
-    if (req > 0)
-        return req;
+extern "C" {
 
-    // At present, a negative requested grain size is treated the same way as
-    // a zero grain size, i.e., the runtime computes the actual grainsize
-    // using a hueristic.  In the future, the compiler may give us additional
-    // information about the size of the cilk_for body by passing a negative
-    // grain size.
+/*
+ * Compiler-generate helper routine.
+ */
+void __cilkrts_detach(struct __cilkrts_stack_frame *self) {
+    struct __cilkrts_worker *w = self->worker;
+    struct __cilkrts_stack_frame *parent = self->call_parent;
+    struct __cilkrts_stack_frame *volatile *tail = w->tail;
 
-    // Avoid generating a zero grainsize, even for empty loops.
-    if (count < 1)
-        return 1;
+    self->spawn_helper_pedigree.rank = w->pedigree.rank;
+    self->spawn_helper_pedigree.parent = w->pedigree.parent;
 
-    global_state_t* g = cilkg_get_global_state();
-    if (g->under_ptool)
-    {
-        // Grainsize = 1, when running under PIN, and when the grainsize has
-        // not explicitly been set by the user.
-        return 1;
-    }
-    else
-    {
-        // Divide loop count by 8 times the worker count and round up.
-        const int Px8 = g->P * 8;
-        count_t n = (count + Px8 - 1) / Px8;
+    self->call_parent->parent_pedigree.rank = w->pedigree.rank;
+    self->call_parent->parent_pedigree.parent = w->pedigree.parent;
 
-        // 2K should be enough to amortize the cost of the cilk_for. Any
-        // larger grainsize risks losing parallelism.
-        if (n > 2048)
-            return 2048;
-        return (int) n;  // n <= 2048, so no loss of precision on cast to int
-    }
+    w->pedigree.rank = 0;
+    w->pedigree.parent = &self->spawn_helper_pedigree;
+
+/*assert (tail < w->ltq_limit);*/
+    *tail++ = parent;
+
+/* The stores are separated by a store fence (noop on x86)
+   or the second store is a release (st8.rel on Itanium) */
+    w->tail = tail;
+    self->flags |= CILK_FRAME_DETACHED;
 }
 
+void __cilkrts_pop_frame(struct __cilkrts_stack_frame *sf) {
+    struct __cilkrts_worker *w = sf->worker;
+    w->current_stack_frame = sf->call_parent;
+    sf->call_parent = 0;
+}
+
+
+}
+
+#if 0
 /*
  * call_cilk_for_loop_body
  *
@@ -224,9 +224,20 @@ capture_spawn_arg_stack_frame(__cilkrts_stack_frame* &sf, __cilkrts_worker* w)
 #endif
     return w;
 }
+#endif
 
 /*
- * cilk_for_recursive
+ * Pre-declaration
+ */
+template <typename count_t, typename F>
+static
+void cilk_for_numa_recursive_spawn_helper(count_t low, count_t high,
+					  F body, void *data, int grain,
+					  __cilkrts_worker *w,
+					  __cilkrts_pedigree *loop_root_pedigree);
+
+/*
+ * cilk_for_numa_recursive
  *
  * Templatized function to implement the recursive divide-and-conquer
  * algorithm that's how we implement a cilk_for.
@@ -242,11 +253,17 @@ capture_spawn_arg_stack_frame(__cilkrts_stack_frame* &sf, __cilkrts_worker* w)
  */
 template <typename count_t, typename F>
 static
-void cilk_for_recursive(count_t low, count_t high,
-                        F body, void *data, int grain,
-                        __cilkrts_worker *w,
-                        __cilkrts_pedigree *loop_root_pedigree)
+void cilk_for_numa_recursive(count_t low, count_t high,
+			     F body, void *data, int grain,
+			     __cilkrts_worker *w,
+			     __cilkrts_pedigree *loop_root_pedigree)
 {
+    struct __cilkrts_stack_frame cc_sf;
+    __cilkrts_enter_frame_1(&cc_sf);
+    cc_sf.flags |= CILK_FRAME_NUMA;
+    cc_sf.numa_low = low;
+    cc_sf.numa_high = high;
+
 tail_recurse:
     // Cilkscreen should not report this call in a stack trace
     // This needs to be done everytime the worker resumes
@@ -258,6 +275,13 @@ tail_recurse:
     {
         // Invariant: count >= 2
         count_t mid = low + count / 2;
+	// Determine to traverse low/high sub-range first depending on
+	// numa mask and NUMA ID of worker.
+	count_t numa_w = __cilkrts_get_worker_numa(w);
+
+	printf( "w=%d w_numa=%d low=%d mid=%d high=%d w=%p\n",
+		(int)w->self, (int)numa_w, (int)low, (int)mid, (int)high, w );
+
         // The worker is valid only until the first spawn and is expensive to
         // retrieve (using '__cilkrts_get_tls_worker') after the spawn.  The
         // '__cilkrts_stack_frame' is more stable, but isn't initialized until
@@ -273,38 +297,112 @@ tail_recurse:
         // `capture_spawn_arg_stack_frame` when compiling with gcc.
         // Remove this if the "shrink-wrap" optimization is implemented.
         sf = w->current_stack_frame;
-        _Cilk_spawn cilk_for_recursive(low, mid, body, data, grain, w,
+	/*
+        _Cilk_spawn cilk_for_recursive(low, mid, numa, body, data, grain, w,
                                        loop_root_pedigree);
+	*/
+	if( !CILK_SETJMP(cc_sf.ctx) )
+	    cilk_for_numa_recursive_spawn_helper(low, mid, body, data,
+						 grain, w, loop_root_pedigree);
 #else        
+	/*
         _Cilk_spawn cilk_for_recursive(low, mid, body, data, grain,
                                        capture_spawn_arg_stack_frame(sf, w),
                                        loop_root_pedigree);
+	*/
+	if( !CILK_SETJMP(cc_sf.ctx) ) {
+	    if( numa_w < mid ) {
+		/* Adjust NUMA range on current stack frame to remainder */
+		printf( "change NUMA range %d-%d to %d-%d\n",
+			(int)cc_sf.numa_low, (int)cc_sf.numa_high,
+			(int)mid, (int)cc_sf.numa_high );
+		cc_sf.numa_low = mid;
+		cilk_for_numa_recursive_spawn_helper(
+		    low, mid, body, data, grain,
+		    capture_spawn_arg_stack_frame(sf, w),
+		    loop_root_pedigree);
+	    } else {
+		/* Adjust NUMA range on current stack frame to remainder */
+		printf( "change NUMA range %d-%d to %d-%d\n",
+			(int)cc_sf.numa_low, (int)cc_sf.numa_high,
+			(int)cc_sf.numa_low, (int)mid );
+		cc_sf.numa_high = mid;
+		cilk_for_numa_recursive_spawn_helper(
+		    mid, high, body, data, grain,
+		    capture_spawn_arg_stack_frame(sf, w),
+		    loop_root_pedigree);
+	    }
+	}
 #endif
         w = sf->worker;
-        low = mid;
+	if( numa_w < mid ) {
+	    low = mid;
+	} else {
+	    high = mid;
+	}
 
         goto tail_recurse;
     }
 
     // Call the cilk_for loop body lambda function passed in by the compiler to
     // execute one grain
+    printf( "to body %d-%d me=%d w=%p\n", (int)low, (int)high, __cilkrts_get_worker_numa(w), w );
     call_cilk_for_loop_body(low, high, body, data, w, loop_root_pedigree);
+
+    if( cc_sf.flags & CILK_FRAME_UNSYNCHED ) {
+	if( !CILK_SETJMP(cc_sf.ctx) )
+	    __cilkrts_sync( &cc_sf );
+    }
+
+    __cilkrts_pop_frame(&cc_sf);
+    if( cc_sf.flags )
+	__cilkrts_leave_frame(&cc_sf);
 }
 
+/*
+ * cilk_for_numa_recursive_spawn_helper
+ *
+ * Manual outline of spawn helper function for cilk_for_numa_recursive.
+ *
+ */
+template <typename count_t, typename F>
+void cilk_for_numa_recursive_spawn_helper(count_t low, count_t high,
+					  F body, void *data, int grain,
+					  __cilkrts_worker *w,
+					  __cilkrts_pedigree *loop_root_pedigree)
+{
+    __cilkrts_stack_frame sf;
+    __cilkrts_enter_frame_1(&sf);
+    __cilkrts_detach(&sf);
+    sf.flags |= CILK_FRAME_NUMA; // should be narrowing? _detach_numa(&sf,lo,hi)
+    sf.numa_low = low;
+    sf.numa_high = high;
+
+    printf( "help %d-%d me=%d %p\n", (int)low, (int)high, __cilkrts_get_worker_numa(sf.worker), sf.worker );
+    cilk_for_numa_recursive<count_t,F>(low, high, body, data, grain,
+				       w, loop_root_pedigree);
+
+    __cilkrts_pop_frame(&sf);
+    if(sf.flags)
+	__cilkrts_leave_frame(&sf);
+}
+
+#if 0
 static void noop() { }
+#endif
 
 /*
- * cilk_for_root
+ * cilk_for_numa_root
  *
  * Templatized function to implement the top level of a cilk_for loop.
  *
- * body  - lambda function for the cilk_for loop body
- * data  - data used by the lambda function
- * count - trip count for loop
- * grain - grain size (0 if it should be computed)
+ * body     - lambda function for the cilk_for loop body
+ * data     - data used by the lambda function
+ * count    - trip count for loop
+ * grain    - grain size (0 if it should be computed)
  */
 template <typename count_t, typename F>
-static void cilk_for_root(F body, void *data, count_t count, int grain)
+static void cilk_for_numa_root(F body, void *data, count_t count, int grain)
 {
     // Cilkscreen should not report this call in a stack trace
     NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
@@ -348,11 +446,11 @@ static void cilk_for_root(F body, void *data, count_t count, int grain)
 //    w->pedigree.next = &loop_root_pedigree;
 
     /* Spawn is necessary at top-level to force runtime to start up.
-     * Runtime must be started in order to call the grainsize() function.
+     * TBD: Runtime must be started in order to call the grainsize() function.
      */
-    int gs = grainsize(grain, count);
-    cilk_for_recursive((count_t) 0, count, body, data, gs, w,
-                       &loop_root_pedigree);
+    int gs = 1; // grainsize(grain, count);
+    cilk_for_numa_recursive((count_t) 0, count, body, data,
+			    gs, w, &loop_root_pedigree);
 
     // Need to refetch the worker after calling a spawning function.
     w = sf->worker;
@@ -379,7 +477,7 @@ static void cilk_for_root(F body, void *data, count_t count, int grain)
 extern "C" {
 
 /*
- * __cilkrts_cilk_for_32
+ * __cilkrts_cilk_for_numa_32
  *
  * Implementation of cilk_for for 32-bit trip counts (regardless of processor
  * word size).  Assumes that the range is 0 - count.
@@ -390,8 +488,11 @@ extern "C" {
  * grain - grain size (0 if it should be computed)
  */
 
-CILK_ABI_THROWS_VOID __cilkrts_cilk_for_32(__cilk_abi_f32_t body, void *data,
-                                            cilk32_t count, int grain)
+// TODO: list in symbols.ver under ABI2.0
+
+CILK_ABI_THROWS_VOID
+__cilkrts_cilk_for_numa_32(__cilk_abi_f32_t body, void *data,
+			   cilk32_t count, int grain)
 {
     // Cilkscreen should not report this call in a stack trace
     NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
@@ -399,11 +500,11 @@ CILK_ABI_THROWS_VOID __cilkrts_cilk_for_32(__cilk_abi_f32_t body, void *data,
     // Check for an empty range here as an optimization - don't need to do any
     // __cilkrts_stack_frame initialization
     if (count > 0)
-        cilk_for_root(body, data, count, grain);
+        cilk_for_numa_root(body, data, count, grain);
 }
 
 /*
- * __cilkrts_cilk_for_64
+ * __cilkrts_cilk_for_numa_64
  *
  * Implementation of cilk_for for 64-bit trip counts (regardless of processor
  * word size).  Assumes that the range is 0 - count.
@@ -413,8 +514,9 @@ CILK_ABI_THROWS_VOID __cilkrts_cilk_for_32(__cilk_abi_f32_t body, void *data,
  * count - trip count for loop
  * grain - grain size (0 if it should be computed)
  */
-CILK_ABI_THROWS_VOID __cilkrts_cilk_for_64(__cilk_abi_f64_t body, void *data,
-                                            cilk64_t count, int grain)
+CILK_ABI_THROWS_VOID
+__cilkrts_cilk_for_numa_64(__cilk_abi_f64_t body, void *data,
+			   cilk64_t count, int grain)
 {
     // Cilkscreen should not report this call in a stack trace
     NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
@@ -422,11 +524,9 @@ CILK_ABI_THROWS_VOID __cilkrts_cilk_for_64(__cilk_abi_f64_t body, void *data,
     // Check for an empty range here as an optimization - don't need to do any
     // __cilkrts_stack_frame initialization
     if (count > 0)
-        cilk_for_root(body, data, count, grain);
+        cilk_for_numa_root(body, data, count, grain);
 }
 
 } // end extern "C"
-
-#include "cilk-abi-cilk-for-numa.cpp"
 
 /* End cilk-abi-cilk-for.cpp */

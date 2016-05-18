@@ -582,6 +582,29 @@ static void reset_THE_exception(__cilkrts_worker *w)
     __cilkrts_fence();
 }
 
+/* conditions under which victim->head meets NUMA constraints */
+static int match_numa_range(__cilkrts_worker *w, int numa_low, int numa_high)
+{
+    int my_numa = __cilkrts_get_worker_numa(w);
+    return numa_low <= my_numa && my_numa < numa_high;
+}
+
+static int match_numa_sf(__cilkrts_worker *w, __cilkrts_stack_frame *sf) {
+    if( sf->flags & CILK_FRAME_NUMA )
+        return match_numa_range(w, sf->numa_low, sf->numa_high);
+    else
+        return true;
+}
+
+static int match_numa_pf(__cilkrts_worker *w, __cilkrts_pending_frame *pf) {
+    /*
+    if( pf->flags & CILK_FRAME_NUMA )
+        return match_numa_range(w, pf->numa_low, pf->numa_high);
+    else
+    */
+        return true;
+}
+
 /* conditions under which victim->head can be stolen: */
 static int can_steal_from(__cilkrts_worker *victim)
 {
@@ -1166,6 +1189,20 @@ static void random_steal(__cilkrts_worker *w)
     n = myrand(w) % (w->g->total_workers - 1);
     if (n >= w->self)
         ++n;
+/*
+    const int numa_weight = 2;
+    const int numa_nodes = 4;
+    const int numa_size = (w->g->total_workers + numa_nodes - 1) / numa_nodes;
+    const int draw_workers
+        = w->g->total_workers - 1 + numa_weight * (numa_size - 1);
+    n = myrand(w) % draw_workers;
+    if( n >= w->g->total_workers - 1 ) {
+        const int first = w->self - ( w->self % numa_size );
+        n = first + (n - w->g->total_workers - 1) % (numa_size - 1);
+    }
+    if (n >= w->self)
+        ++n;
+*/
 
     // If we're replaying a log, override the victim.  -1 indicates that
     // we've exhausted the list of things this worker stole when we recorded
@@ -1206,7 +1243,7 @@ static void random_steal(__cilkrts_worker *w)
         } STOP_INTERVAL(w, INTERVAL_FIBER_DEALLOCATE);
         return;
     }
-    
+
     /* Attempt to steal work from the victim */
     if (worker_trylock_other(w, victim)) {
         DBGPRINTF ("%d-%p: Attempt steal work from worker %d\n",
@@ -1253,6 +1290,25 @@ static void random_steal(__cilkrts_worker *w)
                     // dekker protocol
                     decrement_E(victim);
                     proceed_with_steal = 0;
+                }
+
+                // Check if the thief matches NUMA constraints on the stack
+                // frame it is trying to steal.
+                if( !match_numa_sf(w, *victim->head) ) {
+                    // Abort the steal attempt. decrement_E(victim) to
+                    // counter the increment_E(victim) done by the
+                    // dekker protocol
+                    decrement_E(victim);
+                    proceed_with_steal = 0;
+                    static int __thread nfail = 0;
+                    if( ++nfail < 5 ) {
+                        printf( "steal failure w=,%d,%d victim=%d-%d\n",
+                                w->self, __cilkrts_get_worker_numa(w),
+                                (*victim->head)->numa_low,
+                                (*victim->head)->numa_high);
+                    }
+/*
+*/
                 }
 
                 if (proceed_with_steal)
