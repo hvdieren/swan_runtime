@@ -267,6 +267,9 @@ void cilk_for_numa_recursive(count_t low, count_t high,
 {
     struct __cilkrts_stack_frame cc_sf;
     __cilkrts_enter_frame_1(&cc_sf);
+    /* What if NUMA flags have already been set on the parent frame?
+     * Do we override them? Possibly we can make this configurable by
+     * the programmer. For now we simply override. */
     cc_sf.flags |= CILK_FRAME_NUMA;
     cc_sf.numa_low = low;
     cc_sf.numa_high = high;
