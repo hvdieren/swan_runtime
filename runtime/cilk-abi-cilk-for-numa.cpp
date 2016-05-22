@@ -458,7 +458,7 @@ static void cilk_for_numa_root(F body, void *data, count_t count, int grain)
     /* Spawn is necessary at top-level to force runtime to start up.
      * TBD: Runtime must be started in order to call the grainsize() function.
      */
-    int gs = 1; // grainsize(grain, count);
+    int gs = grainsize(grain, count);
     cilk_for_numa_recursive((count_t) 0, count, body, data,
 			    gs, w, &loop_root_pedigree);
 
