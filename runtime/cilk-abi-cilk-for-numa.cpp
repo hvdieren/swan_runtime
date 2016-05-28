@@ -241,7 +241,8 @@ static
 void cilk_for_numa_recursive_spawn_helper(count_t low, count_t high,
 					  F body, void *data, int grain,
 					  __cilkrts_worker *w,
-					  __cilkrts_pedigree *loop_root_pedigree);
+					  __cilkrts_pedigree *loop_root_pedigree)
+    __attribute__((noinline));
 
 /*
  * cilk_for_numa_recursive
@@ -289,8 +290,8 @@ tail_recurse:
 	// numa mask and NUMA ID of worker.
 	count_t numa_w = __cilkrts_get_worker_numa(w);
 
-	printf( "w=%d w_numa=%d low=%d mid=%d high=%d w=%p\n",
-		(int)w->self, (int)numa_w, (int)low, (int)mid, (int)high, w );
+	// printf( "w=%d w_numa=%d low=%d mid=%d high=%d w=%p\n",
+	// (int)w->self, (int)numa_w, (int)low, (int)mid, (int)high, w );
 
         // The worker is valid only until the first spawn and is expensive to
         // retrieve (using '__cilkrts_get_tls_worker') after the spawn.  The
@@ -320,12 +321,16 @@ tail_recurse:
                                        capture_spawn_arg_stack_frame(sf, w),
                                        loop_root_pedigree);
 	*/
+	// Save floating-point state
+	asm( "stmxcsr %0\n\t"
+	     "fnstcw %1" : "=m"(cc_sf.mxcsr), "=m"(cc_sf.fpcsr)
+	     : : );
 	if( !CILK_SETJMP(cc_sf.ctx) ) {
 	    if( numa_w < mid ) {
 		/* Adjust NUMA range on current stack frame to remainder */
-		printf( "change NUMA range %d-%d to %d-%d\n",
-			(int)cc_sf.numa_low, (int)cc_sf.numa_high,
-			(int)mid, (int)cc_sf.numa_high );
+		// printf( "change NUMA range %d-%d to %d-%d\n",
+			// (int)cc_sf.numa_low, (int)cc_sf.numa_high,
+			// (int)mid, (int)cc_sf.numa_high );
 		cc_sf.numa_low = mid;
 		cilk_for_numa_recursive_spawn_helper(
 		    low, mid, body, data, grain,
@@ -333,9 +338,9 @@ tail_recurse:
 		    loop_root_pedigree);
 	    } else {
 		/* Adjust NUMA range on current stack frame to remainder */
-		printf( "change NUMA range %d-%d to %d-%d\n",
-			(int)cc_sf.numa_low, (int)cc_sf.numa_high,
-			(int)cc_sf.numa_low, (int)mid );
+		// printf( "change NUMA range %d-%d to %d-%d\n",
+			// (int)cc_sf.numa_low, (int)cc_sf.numa_high,
+			// (int)cc_sf.numa_low, (int)mid );
 		cc_sf.numa_high = mid;
 		cilk_for_numa_recursive_spawn_helper(
 		    mid, high, body, data, grain,
@@ -356,7 +361,7 @@ tail_recurse:
 
     // Call the cilk_for loop body lambda function passed in by the compiler to
     // execute one grain
-    printf( "to body %d-%d me=%d w=%p\n", (int)low, (int)high, __cilkrts_get_worker_numa(w), w );
+    // printf( "to body %d-%d me=%d w=%p\n", (int)low, (int)high, __cilkrts_get_worker_numa(w), w );
     call_cilk_for_loop_body(low, high, body, data, w, loop_root_pedigree);
 
     if( cc_sf.flags & CILK_FRAME_UNSYNCHED ) {
@@ -382,13 +387,13 @@ void cilk_for_numa_recursive_spawn_helper(count_t low, count_t high,
 					  __cilkrts_pedigree *loop_root_pedigree)
 {
     __cilkrts_stack_frame sf;
-    __cilkrts_enter_frame_1(&sf);
+    __cilkrts_enter_frame_fast(&sf);
     __cilkrts_inline_detach(&sf);
     sf.flags |= CILK_FRAME_NUMA; // should be narrowing? _detach_numa(&sf,lo,hi)
     sf.numa_low = low;
     sf.numa_high = high;
 
-    printf( "help %d-%d me=%d %p\n", (int)low, (int)high, __cilkrts_get_worker_numa(sf.worker), sf.worker );
+    // printf( "help %d-%d me=%d %p\n", (int)low, (int)high, __cilkrts_get_worker_numa(sf.worker), sf.worker );
     cilk_for_numa_recursive<count_t,F>(low, high, body, data, grain,
 				       w, loop_root_pedigree);
 
