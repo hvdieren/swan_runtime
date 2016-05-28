@@ -161,8 +161,8 @@ CILK_ABI_VOID __cilkrts_enter_frame_df(__cilkrts_stack_frame *sf)
     sf->reserved = 0;
     sf->flags |= CILK_FRAME_DATAFLOW;
     sf->call_parent->df_issue_child = sf;
-    sf->df_issue_child = 0;
-    sf->df_issue_me_ptr = &sf->call_parent->df_issue_child;
+    // sf->df_issue_child = 0;
+    // sf->df_issue_me_ptr = &sf->call_parent->df_issue_child;
 }
 
 static inline
