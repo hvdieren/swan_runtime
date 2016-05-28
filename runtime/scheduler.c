@@ -1301,13 +1301,13 @@ static void random_steal(__cilkrts_worker *w)
                     decrement_E(victim);
                     proceed_with_steal = 0;
                     static int __thread nfail = 0;
+/*
                     if( ++nfail < 5 ) {
                         printf( "steal failure w=,%d,%d victim=%d-%d\n",
                                 w->self, __cilkrts_get_worker_numa(w),
                                 (*victim->head)->numa_low,
                                 (*victim->head)->numa_high);
                     }
-/*
 */
                 }
 
