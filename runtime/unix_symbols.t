@@ -39,6 +39,8 @@ __cilkrts_bump_worker_rank
 __cilkrts_bump_worker_rank_internal
 __cilkrts_cilk_for_32
 __cilkrts_cilk_for_64
+__cilkrts_cilk_for_numa_32;
+__cilkrts_cilk_for_numa_64;
 __cilkrts_debugger_notification
 __cilkrts_dump_stats
 __cilkrts_end_cilk

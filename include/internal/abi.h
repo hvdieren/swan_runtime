@@ -311,6 +311,15 @@ struct __cilkrts_pending_frame {
      * the frame becomes ready for execution.
      */
     int incoming_count;
+
+    /**
+     * NUMA-aware scheduling restriction: the range of NUMA domains that
+     * is allowed to execute these tasks. Range is [numa_low,numa_high).
+     * When stealing work, worker threads need to ascertain that they
+     * are executing in an appropriate NUMA domain.
+     */
+    // uint32_t numa_low;
+    // uint32_t numa_high;
 };
 
 
@@ -427,6 +436,16 @@ struct __cilkrts_stack_frame
      * synchronise with other workers on whether to issue+release or not.
      */
     __cilkrts_stack_frame * volatile * df_issue_me_ptr;
+
+    /**
+     * NUMA-aware scheduling restriction: the range of NUMA domains that
+     * is allowed to execute these tasks. Range is [numa_low,numa_high).
+     * When stealing work, worker threads need to ascertain that they
+     * are executing in an appropriate NUMA domain.
+     */
+    uint32_t numa_low;
+    uint32_t numa_high;
+
 #endif /* __CILKRTS_ABI_VERSION >= 2 */
 };
 
@@ -480,11 +499,13 @@ struct __cilkrts_stack_frame
 
 /**
  * Is this frame a helper function for a spawn with dataflow arguments?
+ * TODO: iti appears this flag is never checked, so can be removed.
  */
 #define CILK_FRAME_DATAFLOW 0x0200
 
 /**
  * Has the task with dataflow arguments been issued?
+ * TODO: iti appears this flag is never checked, so can be removed.
  */
 #define CILK_FRAME_DATAFLOW_ISSUED 0x0400
 
@@ -493,6 +514,9 @@ struct __cilkrts_stack_frame
 
 /** Used by Windows exception handling to indicate that __cilkrts_leave_frame should do nothing */
 #define CILK_FRAME_UNWINDING 0x10000
+
+/** Is this frame limited by NUMA-aware scheduling choices? **/
+#define CILK_FRAME_NUMA 0x20000
 
 /*
  * The low 24-bits of the 'flags' field are the flags, proper.  The high 8-bits
@@ -524,6 +548,7 @@ struct __cilkrts_stack_frame
                             CILK_FRAME_DATAFLOW_ISSUED | \
                             CILK_FRAME_SUSPENDED | \
                             CILK_FRAME_UNWINDING | \
+                            CILK_FRAME_NUMA | \
                             CILK_FRAME_VERSION_MASK))
 
 __CILKRTS_BEGIN_EXTERN_C
@@ -632,6 +657,15 @@ CILK_ABI_THROWS(void) __cilkrts_rethrow(__cilkrts_stack_frame *sf);
  * @return NULL if this thread is not yet bound to a worker.
  */
 CILK_ABI(__cilkrts_worker_ptr) __cilkrts_get_tls_worker(void);
+
+/**
+ * Determine the NUMA node where the worker is executing.
+ *
+ * @return The NUMA node of the CPU where the worker is executing.
+ *         Note: this value may be already stale by the time this
+ *               function returns.
+ */
+CILK_ABI(int32_t) __cilkrts_get_worker_numa(__cilkrts_worker *);
 
 /**
  * Similar to __cilkrts_get_tls_worker, but assumes that TLS has been

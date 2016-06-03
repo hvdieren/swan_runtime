@@ -128,7 +128,16 @@ void enter_frame_internal(__cilkrts_stack_frame *sf, uint32_t version)
     w->current_stack_frame = sf;
 
     sf->df_issue_child = 0; // Extra work for dataflow...
-    sf->df_issue_me_ptr = 0; // Extra work for dataflow...
+    // sf->df_issue_me_ptr = 0; // Extra work for dataflow...
+
+    if( sf->call_parent ) {
+	sf->call_parent->df_issue_child = 0;
+	// sf->df_issue_me_ptr = &sf->call_parent->df_issue_child;
+
+	sf->flags |= sf->call_parent->flags & CILK_FRAME_NUMA;
+	sf->numa_low = sf->call_parent->numa_low;
+	sf->numa_high = sf->call_parent->numa_high;
+    }
 
     //DBGPRINTF
     // printf("%d-%p enter_frame_internal - sf %p, parent: %p args_tags: %p\n", w->self, w, sf, sf->call_parent, sf->args_tags); /*    */
@@ -139,15 +148,12 @@ CILK_ABI_VOID __cilkrts_enter_frame(__cilkrts_stack_frame *sf)
     enter_frame_internal(sf, 0);
 }
 
-CILK_ABI_VOID __cilkrts_enter_frame_1(__cilkrts_stack_frame *sf)
+CILK_ABI_VOID __cilkrts_enter_frame_1(__cilkrts_stack_frame *sf) // v. 2
 {
     enter_frame_internal(sf, 1);
     sf->reserved = 0;
-    if( sf->call_parent ) {
-	sf->call_parent->df_issue_child = 0;
-	sf->df_issue_me_ptr = &sf->call_parent->df_issue_child;
-    }
 }
+
 
 CILK_ABI_VOID __cilkrts_enter_frame_df(__cilkrts_stack_frame *sf)
 {
@@ -155,17 +161,24 @@ CILK_ABI_VOID __cilkrts_enter_frame_df(__cilkrts_stack_frame *sf)
     sf->reserved = 0;
     sf->flags |= CILK_FRAME_DATAFLOW;
     sf->call_parent->df_issue_child = sf;
-    sf->df_issue_me_ptr = &sf->call_parent->df_issue_child;
+    // sf->df_issue_child = 0;
+    // sf->df_issue_me_ptr = &sf->call_parent->df_issue_child;
 }
 
 static inline
 void enter_frame_fast_internal(__cilkrts_stack_frame *sf, uint32_t version)
 {
     __cilkrts_worker *w = __cilkrts_get_tls_worker_fast();
-    sf->flags = version << 24;
     sf->call_parent = w->current_stack_frame;
+    sf->flags = (version << 24) | (sf->call_parent->flags & CILK_FRAME_NUMA);
     sf->worker = w;
     w->current_stack_frame = sf;
+
+    sf->call_parent->df_issue_child = 0;
+    sf->df_issue_child = 0;
+
+    sf->numa_low = sf->call_parent->numa_low;
+    sf->numa_high = sf->call_parent->numa_high;
 }
 
 CILK_ABI_VOID __cilkrts_enter_frame_fast(__cilkrts_stack_frame *sf)
@@ -177,6 +190,16 @@ CILK_ABI_VOID __cilkrts_enter_frame_fast_1(__cilkrts_stack_frame *sf)
 {
     enter_frame_fast_internal(sf, 1);
     sf->reserved = 0;
+}
+
+CILK_ABI_VOID __cilkrts_enter_frame_fast_df(__cilkrts_stack_frame *sf)
+{
+    enter_frame_fast_internal(sf, 1); // 2
+    sf->reserved = 0;
+    sf->flags |= CILK_FRAME_DATAFLOW;
+    sf->call_parent->df_issue_child = sf;
+    sf->df_issue_child = 0;
+    sf->df_issue_me_ptr = &sf->call_parent->df_issue_child;
 }
 
 /**
@@ -361,7 +384,8 @@ CILK_ABI_VOID __cilkrts_leave_frame(__cilkrts_stack_frame *sf)
         /* This path is taken when undo-detach wins the race with stealing.
            Otherwise this strand terminates and the caller will be resumed
            via setjmp at sync. */
-        if (__builtin_expect(sf->flags & CILK_FRAME_FLAGS_MASK, 0))
+        if (__builtin_expect(sf->flags & CILK_FRAME_FLAGS_MASK
+			     & ~CILK_FRAME_NUMA, 0))
             __cilkrts_bug("W%u: frame won undo-detach race with flags %02x\n",
                           w->self, sf->flags);
 
@@ -888,6 +912,37 @@ __cilkrts_save_fp_ctrl_state(__cilkrts_stack_frame *sf)
 {
     // Pass call onto OS/architecture dependent function
     sysdep_save_fp_ctrl_state(sf);
+}
+
+#include <sched.h>
+#if !defined(__APPLE__)
+#include <numa.h>
+#include <errno.h>
+#include <string.h>
+#endif
+
+CILK_ABI(int32_t)
+__cilkrts_get_worker_numa(__cilkrts_worker *w)
+{
+    // FIXME: numa_node_of_cpu() does I/O on /proc. Avoid repeated use of
+    //        that by caching the information.
+#if defined(__APPLE__)
+    // Testing purposes only
+    return w->self;
+#else
+    int cpu = sched_getcpu();
+    if( cpu < 0 ) { // Error, errno explains what
+	fprintf( stderr, "getcpu() error: %d: %s\n", errno, strerror(errno) );
+	cpu = 0;
+    }
+    int node = numa_node_of_cpu(cpu);
+    if( node < 0 ) { // Error, errno explains what
+	fprintf( stderr, "node_of_cpu(%d) error: %d: %s\n", cpu, errno, strerror(errno) );
+	node = 0;
+    }
+    // printf( "NUMA? w=%d cpu=%d node=%d\n", w->self, cpu, node );
+    return node;
+#endif
 }
 
 /* end cilk-abi.c */
