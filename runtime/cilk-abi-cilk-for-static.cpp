@@ -111,6 +111,10 @@ static int nthreads;
 static int num_socket;
 static int delta_socket;
 static int cores_per_socket;
+#if WITH_REDUCERS
+static __cilkrts_hyperobject_base *hypermap_reducer;
+static char *hypermap_views;
+#endif
 
 static bool __init_parallel=false;
 
@@ -494,8 +498,14 @@ static void noop() { }
  * count - trip count for loop
  * grain - grain size (0 if it should be computed)
  */
+#if WITH_REDUCERS
 template <typename count_t, typename F>
-static void cilk_for_root(F body, void *data, count_t count, int grain)
+static void cilk_for_root_static(F body, void *data, count_t count, int grain,
+                                __cilkrts_hyperobject_base *hypermap)
+#else
+template <typename count_t, typename F>
+static void cilk_for_root_static(F body, void *data, count_t count, int grain)
+#endif
 {
    /******************************IMPLEMENTATION BY MAHWISH*****************************/
     count_t delta, start, stop;
@@ -510,6 +520,23 @@ static void cilk_for_root(F body, void *data, count_t count, int grain)
      start=0;
      stop=count;
 
+#if WITH_REDUCERS
+     // could use class storage_for_object<> from cilk headers
+     char hypermap_buffer[hypermap ? hypermap->__view_size+CACHE_BLOCK_SIZE:1];
+
+     if( hypermap ) {
+#define CACHE_BLOCK_SIZE 64
+        // Stack-allocate views.
+        uintptr_t offset = uintptr_t(&hypermap_buffer[0])
+            & uintptr_t(CACHE_BLOCK_SIZE-1);
+        hypermap_views = &hypermap_buffer[CACHE_BLOCK_SIZE-offset];
+        hypermap_reducer = hypermap;
+        assert( uintptr_t(hypermap_views) & uintptr_t(CACHE_BLOCK_SIZE-1) == 0 );
+     } else {
+        hypermap_views = NULL;
+        hypermap_reducer = NULL;
+     }
+#endif
 
     for (int i=0; i<nthreads; i++){
         params[i].low=std::min(start+((delta)*i),stop);
@@ -536,7 +563,6 @@ static void cilk_for_root(F body, void *data, count_t count, int grain)
     for (int j=1, nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
        pp_exec_wait(nid );
     }
-
 }
 
 // Use extern "C" to suppress name mangling of __cilkrts_cilk_for_32 and
@@ -562,9 +588,41 @@ CILK_ABI_THROWS_VOID __cilkrts_cilk_for_32(__cilk_abi_f32_t body, void *data,
     NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
     // Check for an empty range here as an optimization - don't need to do any
     // __cilkrts_stack_frame initialization
+#if WITH_REDUCERS
     if (count > 0)
-        cilk_for_root(body, data, count, grain);
+        cilk_for_root_static(body, data, count, grain, /*hypermap*/NULL);
+#else
+    if (count > 0)
+        cilk_for_root_static(body, data, count, grain);
 }
+
+#if WITH_REDUCERS
+/*
+ * __cilkrts_cilk_for_static_reduce_32
+ *
+ * Implementation of cilk_for for 32-bit trip counts (regardless of processor
+ * word size).  Assumes that the range is 0 - count.
+ *
+ * body  - lambda function for the cilk_for loop body
+ * data  - data used by the lambda function
+ * count - trip count for loop
+ * grain - grain size (0 if it should be computed)
+ * hypermap - structure describe all relevant hypermap functions and its size
+ */
+
+CILK_ABI_THROWS_VOID
+__cilkrts_cilk_for_static_reduce_32(__cilk_abi_f32_t body, void *data,
+                                   cilk32_t count, int grain,
+                                   __cilkrts_hyperobject_base *hypermap)
+{
+    // Cilkscreen should not report this call in a stack trace
+    NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
+    // Check for an empty range here as an optimization - don't need to do any
+    // __cilkrts_stack_frame initialization
+    if (count > 0)
+        cilk_for_root_static(body, data, count, grain, hypermap);
+}
+#endif
 
 /*
  * __cilkrts_cilk_for_64
