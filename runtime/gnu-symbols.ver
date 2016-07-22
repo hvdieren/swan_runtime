@@ -52,6 +52,11 @@ CILKABI0
     __cilkrts_bind_thread;
     __cilkrts_cilk_for_32;
     __cilkrts_cilk_for_64;
+    __cilkrts_cilk_for_static_32;
+    __cilkrts_cilk_for_static_64;
+    __cilkrts_cilk_for_static_reduce_32;
+    __cilkrts_cilk_for_static_reduce_64;
+    __cilkrts_hyper_lookup_static;
     __cilkrts_cilk_for_numa_32;
     __cilkrts_cilk_for_numa_64;
     __cilkrts_get_worker_numa;

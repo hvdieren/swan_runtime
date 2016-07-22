@@ -53,6 +53,8 @@
  * This file must be C++, not C, in order to handle C++ exceptions correctly
  * from within the body of the cilk_for loop
  */
+#include <cstring>
+#include <algorithm>
 
 #include "internal/abi.h"
 #include "metacall_impl.h"
@@ -107,13 +109,23 @@ static pp_exec_count *pp_exec_c;
 static struct param *params;
 static int *id;
 static struct tree_struct *pp_tree;
-static int nthreads;
+int nthreads;
 static int num_socket;
 static int delta_socket;
 static int cores_per_socket;
+// #define WITH_REDUCERS 1
 #if WITH_REDUCERS
+#define CACHE_BLOCK_SIZE 64
 static __cilkrts_hyperobject_base *hypermap_reducer;
 static char *hypermap_views;
+static __thread void *hypermap_local_view;
+
+// Round-up view size to multiple of cache block size
+#define HYPERMAP_VIEW_SIZE  (hypermap_reducer->__view_size + ((hypermap_reducer->__view_size + CACHE_BLOCK_SIZE-1) & (CACHE_BLOCK_SIZE-1)))
+#define HYPERMAP_SIZE  (HYPERMAP_VIEW_SIZE * nthreads)
+#define HYPERMAP_GET_WORKER(tid) (&hypermap_views[(tid)*HYPERMAP_VIEW_SIZE])
+#define HYPERMAP_GET_MASTER (void*)(((char*)hypermap_reducer)+hypermap_reducer->__view_offset)
+#define HYPERMAP_GET(tid) (tid==0?HYPERMAP_GET_MASTER:HYPERMAP_GET_WORKER(tid))
 #endif
 
 static bool __init_parallel=false;
@@ -164,6 +176,7 @@ static void pp_exec_wait( int id )
    pp_exec_count *c= &pp_exec_c[id];
    while( c->xid==true) sched_yield();
 }
+
 static void
 pp_exec_fn( int* id )
 {
@@ -189,19 +202,44 @@ pp_exec_fn( int* id )
 		CPU_PREFETCH_par(&pp_tree[j]);
            }
         }
+
+       // Signal other threads to get going
         for(j=0; j<num_children; j++){
            pp_exec_submit( p_tree->child[j], x->func, x->arg);
 
         }
-        (*x->func)(x->arg,p->low,p->high);
-	for(j=0; j<num_children; j++){
-           pp_exec_wait(p_tree->child[j]); 
 
+#if WITH_REDUCERS
+       // If we have reducers in this loop, initialize them here
+       if( hypermap_reducer ) {
+           hypermap_local_view = HYPERMAP_GET(tid);
+           (*hypermap_reducer->__c_monoid.identity_fn)(
+               (void*)&hypermap_reducer->__c_monoid, HYPERMAP_GET(tid) );
+       }
+#endif
+
+       // Execute loop body
+        (*x->func)(x->arg,p->low,p->high);
+
+       // Wait for other threads to complete
+       for(j=0; j<num_children; j++) {
+           pp_exec_wait(p_tree->child[j]);
+#if WITH_REDUCERS
+          if( hypermap_reducer ) {
+              // Reduce results from other thread
+              (*hypermap_reducer->__c_monoid.reduce_fn)(
+                  (void*)&hypermap_reducer->__c_monoid,
+                  HYPERMAP_GET(tid), HYPERMAP_GET(p_tree->child[j]) );
+              // Destroy other thread's view
+              (*hypermap_reducer->__c_monoid.destroy_fn)(
+                  (void*)&hypermap_reducer->__c_monoid,
+                  HYPERMAP_GET(p_tree->child[j]) );
+          }
+#endif
 	}
 	/* Signal we're done */
         c->xid= false;
     } //end if while
-
 }
 
 
@@ -522,20 +560,23 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 
 #if WITH_REDUCERS
      // could use class storage_for_object<> from cilk headers
-     char hypermap_buffer[hypermap ? hypermap->__view_size+CACHE_BLOCK_SIZE:1];
+     hypermap_reducer = hypermap;
+     char hypermap_buffer[hypermap ? HYPERMAP_SIZE+CACHE_BLOCK_SIZE:1];
 
      if( hypermap ) {
-#define CACHE_BLOCK_SIZE 64
         // Stack-allocate views.
         uintptr_t offset = uintptr_t(&hypermap_buffer[0])
             & uintptr_t(CACHE_BLOCK_SIZE-1);
+        // printf( "view size: %ld * %d = %ld\n",
+        //         HYPERMAP_VIEW_SIZE, nthreads, HYPERMAP_SIZE );
         hypermap_views = &hypermap_buffer[CACHE_BLOCK_SIZE-offset];
-        hypermap_reducer = hypermap;
-        assert( uintptr_t(hypermap_views) & uintptr_t(CACHE_BLOCK_SIZE-1) == 0 );
+        assert( (uintptr_t(hypermap_views) & uintptr_t(CACHE_BLOCK_SIZE-1)) == 0 );
      } else {
         hypermap_views = NULL;
-        hypermap_reducer = NULL;
      }
+
+     // Initialize pointer to our local view
+     hypermap_local_view = HYPERMAP_GET(MASTER);
 #endif
 
     for (int i=0; i<nthreads; i++){
@@ -543,7 +584,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
         params[i].high=std::min(start+ delta*(i+1),stop);
     }
 
-   /* first distribute across socket*/
+   /* first distribute across socket */
    for (j=1,  nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
       pp_exec[nid].control= true;
       pp_exec_submit( nid, body, data);
@@ -557,12 +598,47 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     /* now go on and do the work */
     body(data, params[MASTER].low, params[MASTER].high);
 
+    // TODO: the way we reduce results supports non-commutative
+    //       reducers only if we get the tree right!
+
     /* wait on child nodes to finish work*/
-    for(int i=0; i<num_children; i++)
-       pp_exec_wait(pp_tree[MASTER].child[i]);
-    for (int j=1, nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
-       pp_exec_wait(nid );
+    for(int i=0; i<num_children; i++) {
+        pp_exec_wait(pp_tree[MASTER].child[i]);
+#if WITH_REDUCERS
+       if( hypermap_reducer ) {
+          // Reduce results from other thread
+          (*hypermap_reducer->__c_monoid.reduce_fn)(
+              (void*)&hypermap_reducer->__c_monoid,
+              HYPERMAP_GET(MASTER), HYPERMAP_GET(pp_tree[MASTER].child[i]) );
+          // Destroy other thread's view
+          (*hypermap_reducer->__c_monoid.destroy_fn)(
+              (void*)&hypermap_reducer->__c_monoid,
+              HYPERMAP_GET(pp_tree[MASTER].child[i]) );
+       }
+#endif
     }
+
+    for (int j=1, nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
+#if WITH_REDUCERS
+       if( hypermap_reducer ) {
+          // Reduce results from other thread
+          (*hypermap_reducer->__c_monoid.reduce_fn)(
+              (void*)&hypermap_reducer->__c_monoid,
+              HYPERMAP_GET(MASTER), HYPERMAP_GET(nid) );
+          // Destroy other thread's view
+          (*hypermap_reducer->__c_monoid.destroy_fn)(
+              (void*)&hypermap_reducer->__c_monoid, HYPERMAP_GET(nid) );
+       }
+#endif
+    }
+
+#if WITH_REDUCERS
+    // The master always uses the leftmost view.
+    // The master has thus applied all updates to the final view.
+    // Unset variables
+    hypermap_reducer = 0;
+    hypermap_views = 0;
+#endif
 }
 
 // Use extern "C" to suppress name mangling of __cilkrts_cilk_for_32 and
@@ -621,6 +697,12 @@ __cilkrts_cilk_for_static_reduce_32(__cilk_abi_f32_t body, void *data,
     // __cilkrts_stack_frame initialization
     if (count > 0)
         cilk_for_root_static(body, data, count, grain, hypermap);
+}
+
+CILK_EXPORT void* __CILKRTS_STRAND_PURE(
+    __cilkrts_hyper_lookup_static(__cilkrts_hyperobject_base *key))
+{
+    return hypermap_local_view;
 }
 #endif
 
