@@ -63,11 +63,11 @@
 #define MASTER 0
 #include<stdio.h>
 #include <sched.h>
-#include <string.h>
+//#include <string.h>
 #include <pthread.h>
-#include <errno.h>
-#include <iostream>
-#include <cstdlib>
+//#include <errno.h>
+//#include <iostream>
+//#include <cstdlib>
 /*********************/
 // Icky macros to determine if we're compiled with optimization.  Based on
 // the declaration of __CILKRTS_ASSERT in common.h
@@ -142,18 +142,18 @@ void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
 	}
     }
 }
-pp_exec_id_t
+
+static void
 pp_exec_submit( int id, __cilk_abi_f32_t func, void * arg)
 {
-    bool xid;
+    // bool xid;
     pp_exec_t *x= &pp_exec[id];
     pp_exec_count *c= &pp_exec_c[id];
     x->func= func;
     x->arg = arg;
-    xid= c->xid;
+    // xid= c->xid;
     c->xid= true;
-    assert(xid != c->xid);
-    return xid;
+    // assert(xid != c->xid);
 }
 void pp_exec_wait( int id )
 {
@@ -234,7 +234,7 @@ void __parallel_initialize(void){
    delta_socket= (nthreads + num_socket-1)/ num_socket;
    /*allocate memory for data structures*/
   // pp_tree= (struct tree_struct *) malloc(nthreads * sizeof(struct tree_struct));
-   pp_exec= new pp_exec_t[nthreads];
+   pp_exec = new pp_exec_t[nthreads];
    pp_exec_c = new pp_exec_count[nthreads];
    id= new int[nthreads];
    pp_tree= new struct tree_struct[nthreads];
@@ -264,11 +264,6 @@ void __parallel_initialize(void){
     }
     __init_parallel= true;
 }
-
-/*pp_exec_id_t
-pp_exec_submit( pp_exec_id_t id, void * (*fn)(void *))*/
-
-
 
 template <typename count_t>
 static inline int grainsize(int req, count_t count)
@@ -509,7 +504,7 @@ static void cilk_for_root(F body, void *data, count_t count, int grain)
         __parallel_initialize();
         __init_parallel= true;
     }
-    printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
+    // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
 
      delta= (count+nthreads-1)/nthreads; 
      start=0;
