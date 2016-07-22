@@ -102,20 +102,20 @@
     __asm__ __volatile__ ("prefetcht0 %0" : : "m" (*(struct tree_struct*)cache_line)); \
 }
 
-pp_exec_t *pp_exec;
-pp_exec_count *pp_exec_c;
-struct param *params;
-int *id;
-struct tree_struct *pp_tree;
-int nthreads;
-int num_socket;
-int delta_socket;
-int cores_per_socket;
+static pp_exec_t *pp_exec;
+static pp_exec_count *pp_exec_c;
+static struct param *params;
+static int *id;
+static struct tree_struct *pp_tree;
+static int nthreads;
+static int num_socket;
+static int delta_socket;
+static int cores_per_socket;
 
-bool __init_parallel=false;
+static bool __init_parallel=false;
 
 
-void pp_exec_init( pp_exec_t * x, pp_exec_count *c )
+static void pp_exec_init( pp_exec_t * x, pp_exec_count *c )
 {
     c->xid = false;
     x->func = 0;
@@ -123,7 +123,7 @@ void pp_exec_init( pp_exec_t * x, pp_exec_count *c )
    // x->argc =0;
   
 }
-void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
+static void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
 {
     int subtree=0;
     t->t_id= t_id;
@@ -155,12 +155,12 @@ pp_exec_submit( int id, __cilk_abi_f32_t func, void * arg)
     c->xid= true;
     // assert(xid != c->xid);
 }
-void pp_exec_wait( int id )
+static void pp_exec_wait( int id )
 {
    pp_exec_count *c= &pp_exec_c[id];
    while( c->xid==true) sched_yield();
 }
-void
+static void
 pp_exec_fn( int* id )
 {
     int tid= *id;
@@ -203,7 +203,7 @@ pp_exec_fn( int* id )
 
 
 
-void __parallel_initialize(void){
+static void __parallel_initialize(void){
    pthread_t tid;
    int i,j, nid, ret;
    if(const char* env_n = getenv("CILK_NWORKERS")){
