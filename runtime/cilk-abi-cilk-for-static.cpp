@@ -87,6 +87,7 @@
 # endif
 #endif
 
+#if WITH_PREFETCH
 #define CPU_PREFETCH_ex(cache_line) \
 { \
     __asm__ __volatile__ ("prefetcht0 %0" : : "m" (*(pp_exec_t*)cache_line)); \
@@ -103,6 +104,7 @@
 { \
     __asm__ __volatile__ ("prefetcht0 %0" : : "m" (*(struct tree_struct*)cache_line)); \
 }
+#endif WITH_PREFETCH
 
 static pp_exec_t *pp_exec;
 static pp_exec_count *pp_exec_c;
@@ -190,6 +192,7 @@ pp_exec_fn( int* id )
     while( 1 ) {
 	/* Busy wait loop for fast response */
         while(c->xid== false) sched_yield();
+#if WITH_PREFETCH
         if(x->control==true){
 	   CPU_PREFETCH_ex(&pp_exec[tid]);
 	   CPU_PREFETCH_id(&pp_exec_c[tid]);
@@ -202,6 +205,7 @@ pp_exec_fn( int* id )
 		CPU_PREFETCH_par(&pp_tree[j]);
            }
         }
+#endif WITH_PREFETCH
 
        // Signal other threads to get going
         for(j=0; j<num_children; j++){
