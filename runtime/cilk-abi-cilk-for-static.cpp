@@ -104,7 +104,13 @@
 { \
     __asm__ __volatile__ ("prefetcht0 %0" : : "m" (*(struct tree_struct*)cache_line)); \
 }
-#endif WITH_PREFETCH
+#endif // WITH_PREFETCH
+
+struct capture_data {
+    void *body;
+    void *data;
+    bool is32f;
+};
 
 static pp_exec_t *pp_exec;
 static pp_exec_count *pp_exec_c;
@@ -115,6 +121,8 @@ int nthreads;
 static int num_socket;
 static int delta_socket;
 static int cores_per_socket;
+static struct capture_data capture;
+
 #define WITH_REDUCERS 1
 #if WITH_REDUCERS
 #define CACHE_BLOCK_SIZE 64
@@ -136,8 +144,6 @@ static bool __init_parallel=false;
 static void pp_exec_init( pp_exec_t * x, pp_exec_count *c )
 {
     c->xid = false;
-    x->func = 0;
-    x->arg = 0;
    // x->argc =0;
   
 }
@@ -162,13 +168,11 @@ static void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
 }
 
 static void
-pp_exec_submit( int id, __cilk_abi_f32_t func, void * arg)
+pp_exec_submit(int id)
 {
     // bool xid;
     pp_exec_t *x= &pp_exec[id];
     pp_exec_count *c= &pp_exec_c[id];
-    x->func= func;
-    x->arg = arg;
     // xid= c->xid;
     c->xid= true;
     // assert(xid != c->xid);
@@ -205,7 +209,7 @@ pp_exec_fn( int* id )
 		CPU_PREFETCH_par(&pp_tree[j]);
            }
         }
-#endif WITH_PREFETCH
+#endif // WITH_PREFETCH
 
        // Signal other threads to get going
         for(j=0; j<num_children; j++){
@@ -223,7 +227,15 @@ pp_exec_fn( int* id )
 #endif
 
        // Execute loop body
-        (*x->func)(x->arg,p->low,p->high);
+       if( capture.is32f ) {
+           __cilk_abi_f32_t body32
+               = reinterpret_cast<__cilk_abi_f32_t>(capture.body);
+           (*body32)( capture.data, p->low32, p->high32 );
+       } else {
+           __cilk_abi_f64_t body64
+               = reinterpret_cast<__cilk_abi_f64_t>(capture.body);
+           (*body64)( capture.data, p->low64, p->high64 );
+       }
 
        // Wait for other threads to complete
        for(j=0; j<num_children; j++) {
@@ -530,6 +542,19 @@ tail_recurse:
 
 static void noop() { }
 
+template<typename F>
+struct is_32f;
+
+template<>
+struct is_32f<__cilk_abi_f32_t> {
+    static const bool value = true;
+};
+
+template<>
+struct is_32f<__cilk_abi_f64_t> {
+    static const bool value = false;
+};
+
 /*
  * cilk_for_root
  *
@@ -550,17 +575,12 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 #endif
 {
    /******************************IMPLEMENTATION BY MAHWISH*****************************/
-    count_t delta, start, stop;
     int j, nid, num_children;
     if( ! __init_parallel ){
         __parallel_initialize();
         __init_parallel= true;
     }
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
-
-     delta= (count+nthreads-1)/nthreads; 
-     start=0;
-     stop=count;
 
 #if WITH_REDUCERS
      // could use class storage_for_object<> from cilk headers
@@ -583,24 +603,42 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
      hypermap_local_view = hypermap_reducer ? HYPERMAP_GET(MASTER) : 0;
 #endif
 
-    for (int i=0; i<nthreads; i++){
-        params[i].low=std::min(start+((delta)*i),stop);
-        params[i].high=std::min(start+ delta*(i+1),stop);
+    capture.body = reinterpret_cast<void *>(body);
+    capture.data = data;
+    capture.is32f = is_32f<F>::value;
+    if( capture.is32f ) {
+       count_t delta = (count+nthreads-1)/nthreads;
+       for (int i=0; i<nthreads; i++){
+           params[i].low32 = std::min((delta)*i,count);
+           params[i].high32 = std::min(delta*(i+1),count);
+       }
+    } else {
+       count_t delta = (count+nthreads-1)/nthreads;
+       for (int i=0; i<nthreads; i++){
+           params[i].low64 = std::min((delta)*i,count);
+           params[i].high64 = std::min(delta*(i+1),count);
+       }
     }
+
+    /* store fence if not TSO/x86-64 */
 
    /* first distribute across socket */
    for (j=1,  nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
       pp_exec[nid].control= true;
-      pp_exec_submit( nid, body, data);
+      pp_exec_submit( nid );
    } 
     /* now distribute within socket in a tree-like manner */
     num_children = pp_tree[MASTER].num_children;
     for(int i=0; i<num_children; i++){
-       pp_exec_submit(pp_tree[MASTER].child[i],body, data);
+	pp_exec_submit( pp_tree[MASTER].child[i] );
     }
 
     /* now go on and do the work */
-    body(data, params[MASTER].low, params[MASTER].high);
+    if( capture.is32f )
+       (*body)( capture.data, params[MASTER].low32, params[MASTER].high32 );
+    else
+       (*body)( capture.data, params[MASTER].low64, params[MASTER].high64 );
+
 
     // TODO: the way we reduce results supports non-commutative
     //       reducers only if we get the tree right!
@@ -733,13 +771,33 @@ CILK_ABI_THROWS_VOID __cilkrts_cilk_for_64(__cilk_abi_f64_t body, void *data,
     NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
     // Check for an empty range here as an optimization - don't need to do any
     // __cilkrts_stack_frame initialization
-    /*if (count > 0)
-        cilk_for_root(body, data, count, grain);*/
+#if WITH_REDUCERS
+    if (count > 0)
+        cilk_for_root_static(body, data, count, grain, /*hypermap*/0);
+#else
+    if (count > 0)
+        cilk_for_root_static(body, data, count, grain);
+#endif
 }
+
+#if WITH_REDUCERS
+CILK_ABI_THROWS_VOID
+__cilkrts_cilk_for_static_reduce_64(__cilk_abi_f64_t body, void *data,
+                                   cilk64_t count, int grain,
+                                   __cilkrts_hyperobject_base *hypermap)
+{
+    // Cilkscreen should not report this call in a stack trace
+    NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
+    // Check for an empty range here as an optimization - don't need to do any
+    // __cilkrts_stack_frame initialization
+    if (count > 0)
+        cilk_for_root_static(body, data, count, grain, hypermap);
+}
+#endif // WITH_REDUCERS
 
 CILK_ABI_THROWS_VOID __cilkrts_cilk_for_numa_64(__cilk_abi_f64_t body, void *data,
                                                cilk64_t count, int grain) {
-    __cilkrts_cilk_for_static_reduce_32( (__cilk_abi_f32_t)body, data, (cilk32_t)count, grain , 0 );
+    __cilkrts_cilk_for_static_reduce_64( body, data, count, grain , 0 );
 }
 
 
