@@ -113,7 +113,7 @@ int nthreads;
 static int num_socket;
 static int delta_socket;
 static int cores_per_socket;
-// #define WITH_REDUCERS 1
+#define WITH_REDUCERS 1
 #if WITH_REDUCERS
 #define CACHE_BLOCK_SIZE 64
 static __cilkrts_hyperobject_base *hypermap_reducer;
@@ -125,7 +125,7 @@ static __thread void *hypermap_local_view;
 #define HYPERMAP_SIZE  (HYPERMAP_VIEW_SIZE * nthreads)
 #define HYPERMAP_GET_WORKER(tid) (&hypermap_views[(tid)*HYPERMAP_VIEW_SIZE])
 #define HYPERMAP_GET_MASTER (void*)(((char*)hypermap_reducer)+hypermap_reducer->__view_offset)
-#define HYPERMAP_GET(tid) (tid==0?HYPERMAP_GET_MASTER:HYPERMAP_GET_WORKER(tid))
+#define HYPERMAP_GET(tid) (tid==MASTER?HYPERMAP_GET_MASTER:HYPERMAP_GET_WORKER(tid))
 #endif
 
 static bool __init_parallel=false;
@@ -576,7 +576,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
      }
 
      // Initialize pointer to our local view
-     hypermap_local_view = HYPERMAP_GET(MASTER);
+     hypermap_local_view = hypermap_reducer ? HYPERMAP_GET(MASTER) : 0;
 #endif
 
     for (int i=0; i<nthreads; i++){
@@ -699,6 +699,11 @@ __cilkrts_cilk_for_static_reduce_32(__cilk_abi_f32_t body, void *data,
         cilk_for_root_static(body, data, count, grain, hypermap);
 }
 
+CILK_ABI_THROWS_VOID __cilkrts_cilk_for_numa_32(__cilk_abi_f32_t body, void *data,
+                                               cilk32_t count, int grain) {
+    __cilkrts_cilk_for_static_reduce_32( body, data, count, grain , 0 );
+}
+
 CILK_EXPORT void* __CILKRTS_STRAND_PURE(
     __cilkrts_hyper_lookup_static(__cilkrts_hyperobject_base *key))
 {
@@ -728,6 +733,14 @@ CILK_ABI_THROWS_VOID __cilkrts_cilk_for_64(__cilk_abi_f64_t body, void *data,
         cilk_for_root(body, data, count, grain);*/
 }
 
+CILK_ABI_THROWS_VOID __cilkrts_cilk_for_numa_64(__cilk_abi_f64_t body, void *data,
+                                               cilk64_t count, int grain) {
+    __cilkrts_cilk_for_static_reduce_32( (__cilk_abi_f32_t)body, data, (cilk32_t)count, grain , 0 );
+}
+
+
 }// end extern "C"
+
+
 
 /* End cilk-abi-cilk-for-static.cpp */
