@@ -699,8 +699,9 @@ extern "C" {
  * grain - grain size (0 if it should be computed)
  */
 
-CILK_ABI_THROWS_VOID __cilkrts_cilk_for_32(__cilk_abi_f32_t body, void *data,
-                                            cilk32_t count, int grain)
+CILK_ABI_THROWS_VOID
+__cilkrts_cilk_for_static_32(__cilk_abi_f32_t body, void *data,
+			     cilk32_t count, int grain)
 {
     // Cilkscreen should not report this call in a stack trace
     NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
@@ -764,8 +765,9 @@ CILK_EXPORT void* __CILKRTS_STRAND_PURE(
  * count - trip count for loop
  * grain - grain size (0 if it should be computed)
  */
-CILK_ABI_THROWS_VOID __cilkrts_cilk_for_64(__cilk_abi_f64_t body, void *data,
-                                            cilk64_t count, int grain)
+CILK_ABI_THROWS_VOID
+__cilkrts_cilk_for_static_64(__cilk_abi_f64_t body, void *data,
+			     cilk64_t count, int grain)
 {
     // Cilkscreen should not report this call in a stack trace
     NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
