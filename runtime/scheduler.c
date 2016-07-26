@@ -3370,6 +3370,9 @@ void __cilkrts_deinit_internal(global_state_t *g)
     cilkg_deinit_global_state();
 }
 
+// Auxiliary in cilk-abi-cilk-for-static.cpp
+extern void notify_static_runtime(unsigned int msg);
+
 /*
  * Wake the runtime by notifying the system workers that they can steal.  The
  * first user worker into the runtime should call this.
@@ -3382,6 +3385,9 @@ static void wake_runtime(global_state_t *g)
         root = g->workers[0];
         CILK_ASSERT(root->l->signal_node);
         signal_node_msg(root->l->signal_node, 1);
+
+        // Put the statically scheduled runtime to sleep.
+        notify_static_runtime(0);
     }
 }
 
@@ -3398,6 +3404,9 @@ static void sleep_runtime(global_state_t *g)
         root = g->workers[0];
         CILK_ASSERT(root->l->signal_node);
         signal_node_msg(root->l->signal_node, 0);
+
+        // Wake up the statically scheduled runtime again.
+        notify_static_runtime(1);
     }
 }
 
