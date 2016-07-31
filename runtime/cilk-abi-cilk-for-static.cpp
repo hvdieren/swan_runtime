@@ -53,6 +53,7 @@
  * This file must be C++, not C, in order to handle C++ exceptions correctly
  * from within the body of the cilk_for loop
  */
+#include <unistd.h>
 #include <cstring>
 #include <algorithm>
 
@@ -140,6 +141,7 @@ static __thread void *hypermap_local_view;
 
 static bool __init_parallel=false;
 
+static bool is_up = false;
 
 static void pp_exec_init( pp_exec_t * x, pp_exec_count *c )
 {
@@ -177,10 +179,21 @@ pp_exec_submit(int id)
     c->xid= true;
     // assert(xid != c->xid);
 }
+static void asm_pause()
+{
+    // should help hyperthreads
+    // __asm__ __volatile__( "pause" : : : );
+}
 static void pp_exec_wait( int id )
 {
    pp_exec_count *c= &pp_exec_c[id];
    while( c->xid==true) sched_yield();
+}
+
+static void
+dummy_fn( void * )
+{
+    while( 1 ) pause();
 }
 
 static void
@@ -195,7 +208,10 @@ pp_exec_fn( int* id )
     int j;
     while( 1 ) {
 	/* Busy wait loop for fast response */
-        while(c->xid== false) sched_yield();
+        while( *((volatile bool*)&c->xid) == false) {
+	    sched_yield();
+	    asm_pause();
+	}
 #if WITH_PREFETCH
         if(x->control==true){
 	   CPU_PREFETCH_ex(&pp_exec[tid]);
@@ -312,15 +328,28 @@ static void __parallel_initialize(void){
 	pp_exec_c[i].xid=false;
         pp_exec[i].control= false;
 
-        if (i==0) continue;
+        if( i==0 ) {
+           // Create dummy thread
+           if( (ret=pthread_create( &tid, NULL, (void *(*)(void *))dummy_fn, NULL )) )
+           {
+               fprintf( stderr, "Error creating thread %d (dummy), retcode=%d: %s\n",
+                        i, ret, strerror(ret) );
+               exit( 1 );
+           }
+           continue;
+        }
+
 	if( (ret=pthread_create( &tid, NULL, (void *(*)(void *))pp_exec_fn, (void *)&id[i] )) )
 	{
-	    fprintf( stderr, "Error creating thread %d\n", i);
+           fprintf( stderr, "Error creating thread %d, retcode=%d: %s\n",
+                    i, ret, strerror(ret) );
 	    exit( 1 );
 	}
     
     }
-    __init_parallel= true;
+    __init_parallel = true;
+    is_up = true;
+    printf( "runtime up...\n" );
 }
 
 template <typename count_t>
@@ -581,6 +610,14 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
         __init_parallel= true;
     }
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
+
+#if 0
+    if( !is_up ) {
+       // printf( "bringing up runtime from for-root\n" );
+       is_up = true;
+       notify_children( 0, 1 );
+    }
+#endif
 
 #if WITH_REDUCERS
      // could use class storage_for_object<> from cilk headers
