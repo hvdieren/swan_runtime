@@ -61,6 +61,7 @@ extern "C" {
 #include "internal/abi.h"
 #include "metacall_impl.h"
 #include "global_state.h"
+#include "signal_node.h"
 #include <cilk/hyperobject_base.h>
 
 /** added by mahwish**/
@@ -107,6 +108,43 @@ extern "C" {
     __asm__ __volatile__ ("prefetcht0 %0" : : "m" (*(struct tree_struct*)cache_line)); \
 }
 #endif // WITH_PREFETCH
+
+typedef unsigned pp_exec_id_t;
+struct pp_exec_t {
+    __cilk_abi_f32_t __unused_func;
+    void * __unused_arg;
+    pp_exec_id_t __unused_t_id;
+    //int argc;
+    bool control;
+    char pad[30];
+};
+struct pp_exec_count{
+  bool xid;
+  char padd[63];
+
+};
+struct param {
+    cilk32_t low32;
+    cilk32_t high32;
+    cilk64_t low64;
+    cilk64_t high64;
+    uint64_t * __unused_out;
+    int __unused_off;
+    char * __unused_data;
+    char padd[8];
+};
+struct tree_struct{
+   int t_id;
+   int tree_size;
+   int num_children;
+   int child[2];
+   uint64_t start_i;
+   uint64_t stop_i;
+   uint64_t delta;
+   char padd[12];
+};
+typedef struct pp_exec_t pp_exec_t;
+typedef struct pp_exec_count pp_exec_count;
 
 struct capture_data {
     void *body;
@@ -191,20 +229,6 @@ static void pp_exec_wait( int id )
    while( c->xid==true) sched_yield();
 }
 
-static void s_notify_children(int tid, unsigned int msg)
-{
-    int child_num;
-
-    // If worker is "n", then its children are 2n + 1, and 2n + 2.
-    child_num = (tid << 1) + 1;
-    if (child_num < nthreads) {
-        signal_node_msg(snode[child_num], msg);
-        child_num++;
-        if (child_num < nthreads)
-            signal_node_msg(snode[child_num], msg);
-    }
-}
-
 static void
 dummy_fn( void * )
 {
@@ -255,9 +279,8 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 #endif // WITH_PREFETCH
 
        // Signal other threads to get going
-        for(j=0; j<num_children; j++){
-           pp_exec_submit( p_tree->child[j], x->func, x->arg);
-
+        for(j=0; j<num_children; j++) {
+	    pp_exec_submit( p_tree->child[j] );
         }
 
 #if WITH_REDUCERS
@@ -360,8 +383,6 @@ void __parallel_initialize(void){
    //printf("size of pp_exec_t: %d\n", sizeof(pp_exec_t));
    for( i=0; i < nthreads; ++i ) {
         id[i] =i;
-        pp_exec[i].func=0;
-        pp_exec[i].arg=0;
 	pp_exec_c[i].xid=false;
         pp_exec[i].control= false;
 
@@ -430,14 +451,6 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     if( ! __init_parallel )
         __parallel_initialize();
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
-
-#if 0
-    if( !is_up ) {
-       // printf( "bringing up runtime from for-root\n" );
-       is_up = true;
-       s_notify_children( 0, 1 );
-    }
-#endif
 
 #if WITH_REDUCERS
      // could use class storage_for_object<> from cilk headers
@@ -572,6 +585,7 @@ __cilkrts_cilk_for_static_32(__cilk_abi_f32_t body, void *data,
 #else
     if (count > 0)
         cilk_for_root_static(body, data, count, grain);
+#endif
 }
 
 #if WITH_REDUCERS
@@ -601,10 +615,12 @@ __cilkrts_cilk_for_static_reduce_32(__cilk_abi_f32_t body, void *data,
         cilk_for_root_static(body, data, count, grain, hypermap);
 }
 
+#if 0
 CILK_ABI_THROWS_VOID __cilkrts_cilk_for_numa_32(__cilk_abi_f32_t body, void *data,
                                                cilk32_t count, int grain) {
     __cilkrts_cilk_for_static_reduce_32( body, data, count, grain , 0 );
 }
+#endif
 
 CILK_EXPORT void* __CILKRTS_STRAND_PURE(
     __cilkrts_hyper_lookup_static(__cilkrts_hyperobject_base *key))
@@ -656,10 +672,12 @@ __cilkrts_cilk_for_static_reduce_64(__cilk_abi_f64_t body, void *data,
 }
 #endif // WITH_REDUCERS
 
+#if 0
 CILK_ABI_THROWS_VOID __cilkrts_cilk_for_numa_64(__cilk_abi_f64_t body, void *data,
                                                cilk64_t count, int grain) {
     __cilkrts_cilk_for_static_reduce_64( body, data, count, grain , 0 );
 }
+#endif
 
 
 }// end extern "C"
