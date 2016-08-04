@@ -57,10 +57,11 @@
 #include <cstring>
 #include <algorithm>
 
+extern "C" {
 #include "internal/abi.h"
 #include "metacall_impl.h"
 #include "global_state.h"
-
+#include <cilk/hyperobject_base.h>
 
 /** added by mahwish**/
 #define MASTER 0
@@ -190,25 +191,51 @@ static void pp_exec_wait( int id )
    while( c->xid==true) sched_yield();
 }
 
+static void s_notify_children(int tid, unsigned int msg)
+{
+    int child_num;
+
+    // If worker is "n", then its children are 2n + 1, and 2n + 2.
+    child_num = (tid << 1) + 1;
+    if (child_num < nthreads) {
+        signal_node_msg(snode[child_num], msg);
+        child_num++;
+        if (child_num < nthreads)
+            signal_node_msg(snode[child_num], msg);
+    }
+}
+
 static void
 dummy_fn( void * )
 {
     while( 1 ) pause();
 }
 
-static void
-pp_exec_fn( int* id )
+void
+static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 {
-    int tid= *id;
     pp_exec_t *x = &pp_exec[tid];
     pp_exec_count *c = &pp_exec_c[tid];
     struct tree_struct *p_tree= &pp_tree[tid];
     struct param *p= &params[tid];
-    int num_children= p_tree->num_children;
+    int num_children;
     int j;
+
+    if( ! __init_parallel )
+        return;
+
+    // printf( "static sched tid=%d\n", tid );
+
+    num_children = p_tree->num_children;
     while( 1 ) {
 	/* Busy wait loop for fast response */
         while( *((volatile bool*)&c->xid) == false) {
+	    // We are polling Cilk's thread signal node. If it says wait,
+	    // we run, if it says continue, we stop.
+	    if( !signal_node_should_wait( dyn_snode ) ) {
+		// printf( "static sched tid=%d leaving\n", tid );
+		return;
+	    }
 	    sched_yield();
 	    asm_pause();
 	}
@@ -274,12 +301,22 @@ pp_exec_fn( int* id )
     } //end if while
 }
 
+static void
+pp_exec_fn( int* id )
+{
+    static_scheduler_fn( *id, 0 );
+}
 
 
 
-static void __parallel_initialize(void){
+void __parallel_initialize(void){
    pthread_t tid;
    int i,j, nid, ret;
+
+   /* Do this only once */
+   if( __init_parallel )
+       return;
+
    if(const char* env_n = getenv("CILK_NWORKERS")){
        nthreads= atoi(env_n);
    }
@@ -328,6 +365,7 @@ static void __parallel_initialize(void){
 	pp_exec_c[i].xid=false;
         pp_exec[i].control= false;
 
+#if 0
         if( i==0 ) {
            // Create dummy thread
            if( (ret=pthread_create( &tid, NULL, (void *(*)(void *))dummy_fn, NULL )) )
@@ -345,12 +383,15 @@ static void __parallel_initialize(void){
                     i, ret, strerror(ret) );
 	    exit( 1 );
 	}
-    
+#endif
+
     }
     __init_parallel = true;
     is_up = true;
     printf( "runtime up...\n" );
 }
+
+} // extern "C"
 
 template <typename count_t>
 static inline int grainsize(int req, count_t count)
@@ -605,17 +646,15 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 {
    /******************************IMPLEMENTATION BY MAHWISH*****************************/
     int j, nid, num_children;
-    if( ! __init_parallel ){
+    if( ! __init_parallel )
         __parallel_initialize();
-        __init_parallel= true;
-    }
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
 
 #if 0
     if( !is_up ) {
        // printf( "bringing up runtime from for-root\n" );
        is_up = true;
-       notify_children( 0, 1 );
+       s_notify_children( 0, 1 );
     }
 #endif
 
@@ -718,6 +757,8 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     hypermap_reducer = 0;
     hypermap_views = 0;
 #endif
+
+    // printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
 }
 
 // Use extern "C" to suppress name mangling of __cilkrts_cilk_for_32 and

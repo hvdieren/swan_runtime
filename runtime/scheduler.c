@@ -2131,6 +2131,9 @@ static full_frame* check_for_work(__cilkrts_worker *w)
     return ff;
 }
 
+extern void
+static_scheduler_fn( int tid, signal_node_t * dyn_snode );
+
 /**
  * Keep stealing or looking on our queue.
  *
@@ -2156,6 +2159,9 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
             // a frame that we should execute...
             CILK_ASSERT(NULL == w->l->next_frame_ff);
             notify_children_wait(w);
+            static_scheduler_fn(w->self+1, w->l->signal_node);
+            // Most likely the following node_wait() will proceed immediately
+            // in case the static runtime has been started up.
             signal_node_wait(w->l->signal_node);
             // ...
             // Runtime is waking up.
