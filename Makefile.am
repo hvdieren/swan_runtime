@@ -83,6 +83,7 @@ libcilkrts_la_SOURCES =            \
   runtime/bug.cpp                  \
   runtime/cilk-abi.c               \
   runtime/cilk-abi-cilk-for.cpp    \
+  runtime/cilk-abi-cilk-for-static.cpp    \
   runtime/cilk-abi-vla-internal.c  \
   runtime/cilk_api.c               \
   runtime/cilk_fiber.cpp           \
