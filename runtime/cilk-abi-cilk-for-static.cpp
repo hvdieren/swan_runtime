@@ -90,32 +90,13 @@ extern "C" {
 # endif
 #endif
 
-#if WITH_PREFETCH
-#define CPU_PREFETCH_ex(cache_line) \
-{ \
-    __asm__ __volatile__ ("prefetcht0 %0" : : "m" (*(pp_exec_t*)cache_line)); \
-}
-#define CPU_PREFETCH_id(cache_line) \
-{ \
-    __asm__ __volatile__ ("prefetcht0 %0" : : "m" (*(pp_exec_count*)cache_line)); \
-}
-#define CPU_PREFETCH_par(cache_line) \
-{ \
-    __asm__ __volatile__ ("prefetcht0 %0" : : "m" (*(struct param*)cache_line)); \
-}
-#define CPU_PREFETCH_tree(cache_line) \
-{ \
-    __asm__ __volatile__ ("prefetcht0 %0" : : "m" (*(struct tree_struct*)cache_line)); \
-}
-#endif // WITH_PREFETCH
-
 typedef unsigned pp_exec_id_t;
 struct pp_exec_t {
     __cilk_abi_f32_t __unused_func;
     void * __unused_arg;
     pp_exec_id_t __unused_t_id;
     //int argc;
-    bool control;
+    bool __unused_control;
     char pad[30];
 };
 struct pp_exec_count{
@@ -229,12 +210,6 @@ static void pp_exec_wait( int id )
    while( c->xid==true) sched_yield();
 }
 
-static void
-dummy_fn( void * )
-{
-    while( 1 ) pause();
-}
-
 void
 static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 {
@@ -263,28 +238,14 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 	    sched_yield();
 	    asm_pause();
 	}
-#if WITH_PREFETCH
-        if(x->control==true){
-	   CPU_PREFETCH_ex(&pp_exec[tid]);
-	   CPU_PREFETCH_id(&pp_exec_c[tid]);
-	   CPU_PREFETCH_tree(&pp_tree[tid]);
-	    CPU_PREFETCH_par(&pp_tree[tid]);
-           for(j=tid+1; j < tid+delta_socket && j< nthreads; j++){
-		CPU_PREFETCH_ex(&pp_exec[j]);
-		CPU_PREFETCH_id(&pp_exec_c[j]);
-		CPU_PREFETCH_tree(&pp_tree[j]);
-		CPU_PREFETCH_par(&pp_tree[j]);
-           }
-        }
-#endif // WITH_PREFETCH
-
-       // Signal other threads to get going
-        for(j=0; j<num_children; j++) {
+	
+	// Signal other threads to get going
+	for(j=0; j<num_children; j++) {
 	    pp_exec_submit( p_tree->child[j] );
         }
 
 #if WITH_REDUCERS
-       // If we have reducers in this loop, initialize them here
+	// If we have reducers in this loop, initialize them here
        if( hypermap_reducer ) {
            hypermap_local_view = HYPERMAP_GET(tid);
            (*hypermap_reducer->__c_monoid.identity_fn)(
@@ -307,105 +268,75 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
        for(j=0; j<num_children; j++) {
            pp_exec_wait(p_tree->child[j]);
 #if WITH_REDUCERS
-          if( hypermap_reducer ) {
-              // Reduce results from other thread
-              (*hypermap_reducer->__c_monoid.reduce_fn)(
-                  (void*)&hypermap_reducer->__c_monoid,
-                  HYPERMAP_GET(tid), HYPERMAP_GET(p_tree->child[j]) );
-              // Destroy other thread's view
-              (*hypermap_reducer->__c_monoid.destroy_fn)(
-                  (void*)&hypermap_reducer->__c_monoid,
-                  HYPERMAP_GET(p_tree->child[j]) );
-          }
+	   if( hypermap_reducer ) {
+	       // Reduce results from other thread
+	       (*hypermap_reducer->__c_monoid.reduce_fn)(
+		   (void*)&hypermap_reducer->__c_monoid,
+		   HYPERMAP_GET(tid), HYPERMAP_GET(p_tree->child[j]) );
+	       // Destroy other thread's view
+	       (*hypermap_reducer->__c_monoid.destroy_fn)(
+		   (void*)&hypermap_reducer->__c_monoid,
+		   HYPERMAP_GET(p_tree->child[j]) );
+	   }
 #endif
-	}
-	/* Signal we're done */
-        c->xid= false;
+       }
+       /* Signal we're done */
+       c->xid= false;
     } //end if while
 }
 
-static void
-pp_exec_fn( int* id )
-{
-    static_scheduler_fn( *id, 0 );
-}
+void __parallel_initialize(void) {
+    pthread_t tid;
+    int i,j, nid, ret;
 
+    /* Do this only once */
+    if( __init_parallel )
+	return;
 
+    if(const char* env_n = getenv("CILK_NWORKERS")){
+	nthreads= atoi(env_n);
+    }
+    else{
+	nthreads=1;
+    }
 
-void __parallel_initialize(void){
-   pthread_t tid;
-   int i,j, nid, ret;
-
-   /* Do this only once */
-   if( __init_parallel )
-       return;
-
-   if(const char* env_n = getenv("CILK_NWORKERS")){
-       nthreads= atoi(env_n);
-   }
-   else{
-       nthreads=1;
-   }
-
-   if(const char* env_n = getenv("MACHINE")){
-       num_socket= atoi(env_n);
-      if(strcmp(env_n,"jacob")==0){
-        cores_per_socket=12; 
-      }
-      else if(strcmp(env_n,"hvan03")==0){
-         cores_per_socket=8;
-      }
-      else if(strcmp(env_n,"hpdc")==0){
-         cores_per_socket=8;
-      }
-   }else{
-      cores_per_socket=12; 
-   }
-
-
-   /*calculate over how many sockets the threds will be spread, and how many threads/socket*/
-   num_socket= (nthreads+cores_per_socket-1)/cores_per_socket;  //assumption: correct number of threads given
-   delta_socket= (nthreads + num_socket-1)/ num_socket;
-   /*allocate memory for data structures*/
-  // pp_tree= (struct tree_struct *) malloc(nthreads * sizeof(struct tree_struct));
-   pp_exec = new pp_exec_t[nthreads];
-   pp_exec_c = new pp_exec_count[nthreads];
-   id= new int[nthreads];
-   pp_tree= new struct tree_struct[nthreads];
-   params= new struct param[nthreads];
-  /* tree structure initialisation*/
-   for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
-      int rem= nthreads-nid;
-      int size= std::min(rem, delta_socket);
-      pp_tree_init(&pp_tree[nid],size,nid);
-   } 
-
-   //printf("size of pp_exec_t: %d\n", sizeof(pp_exec_t));
-   for( i=0; i < nthreads; ++i ) {
-        id[i] =i;
-	pp_exec_c[i].xid=false;
-        pp_exec[i].control= false;
-
-#if 0
-        if( i==0 ) {
-           // Create dummy thread
-           if( (ret=pthread_create( &tid, NULL, (void *(*)(void *))dummy_fn, NULL )) )
-           {
-               fprintf( stderr, "Error creating thread %d (dummy), retcode=%d: %s\n",
-                        i, ret, strerror(ret) );
-               exit( 1 );
-           }
-           continue;
-        }
-
-	if( (ret=pthread_create( &tid, NULL, (void *(*)(void *))pp_exec_fn, (void *)&id[i] )) )
-	{
-           fprintf( stderr, "Error creating thread %d, retcode=%d: %s\n",
-                    i, ret, strerror(ret) );
-	    exit( 1 );
+    if(const char* env_n = getenv("MACHINE")){
+	num_socket= atoi(env_n);
+	if(strcmp(env_n,"jacob")==0){
+	    cores_per_socket=12; 
 	}
-#endif
+	else if(strcmp(env_n,"hvan03")==0){
+	    cores_per_socket=8;
+	}
+	else if(strcmp(env_n,"hpdc")==0){
+	    cores_per_socket=8;
+	}
+    }else{
+	cores_per_socket=12; 
+    }
 
+
+    /*calculate over how many sockets the threds will be spread, and how many threads/socket*/
+    num_socket= (nthreads+cores_per_socket-1)/cores_per_socket;  //assumption: correct number of threads given
+    delta_socket= (nthreads + num_socket-1)/ num_socket;
+    /*allocate memory for data structures*/
+    // pp_tree= (struct tree_struct *) malloc(nthreads * sizeof(struct tree_struct));
+    pp_exec = new pp_exec_t[nthreads];
+    pp_exec_c = new pp_exec_count[nthreads];
+    id= new int[nthreads];
+    pp_tree= new struct tree_struct[nthreads];
+    params= new struct param[nthreads];
+    /* tree structure initialisation*/
+    for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
+	int rem= nthreads-nid;
+	int size= std::min(rem, delta_socket);
+	pp_tree_init(&pp_tree[nid],size,nid);
+    } 
+
+    //printf("size of pp_exec_t: %d\n", sizeof(pp_exec_t));
+    for( i=0; i < nthreads; ++i ) {
+	id[i] =i;
+	pp_exec_c[i].xid=false;
     }
     __init_parallel = true;
     is_up = true;
@@ -494,7 +425,6 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 
    /* first distribute across socket */
    for (j=1,  nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
-      pp_exec[nid].control= true;
       pp_exec_submit( nid );
    } 
     /* now distribute within socket in a tree-like manner */
