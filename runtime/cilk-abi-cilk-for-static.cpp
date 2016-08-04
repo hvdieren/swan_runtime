@@ -138,7 +138,7 @@ static pp_exec_count *pp_exec_c;
 static struct param *params;
 static int *id;
 static struct tree_struct *pp_tree;
-int nthreads;
+static int nthreads;
 static int num_socket;
 static int delta_socket;
 static int cores_per_socket;
@@ -293,6 +293,8 @@ void __parallel_initialize(void) {
     if( __init_parallel )
 	return;
 
+    // TODO: with current structure, should we get the number of threads
+    //       from the main cilk runtime?
     if(const char* env_n = getenv("CILK_NWORKERS")){
 	nthreads= atoi(env_n);
     }
