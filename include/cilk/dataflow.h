@@ -30,7 +30,9 @@ enum {
 
 struct __cilkrts_pending_frame;
 
-typedef struct __cilkrts_pending_frame __cilkrts_pending_frame;
+// This is a repeated definition from include/internal/abi.h visible only
+// when building the runtime.
+// typedef struct __cilkrts_pending_frame __cilkrts_pending_frame;
 
 struct __cilkrts_task_list_node {
     struct __cilkrts_task_list_node * it_next;
@@ -88,13 +90,13 @@ struct __cilkrts_obj_version {
 uint32_t __cilkrts_obj_metadata_ini_ready(
     __cilkrts_obj_metadata * meta, uint32_t g);
 void __cilkrts_obj_metadata_add_task_read(
-    __cilkrts_pending_frame *, __cilkrts_obj_metadata *,
+    struct __cilkrts_pending_frame *, __cilkrts_obj_metadata *,
     __cilkrts_task_list_node *);
 void __cilkrts_obj_metadata_add_task_write(
-    __cilkrts_pending_frame *, __cilkrts_obj_metadata *,
+    struct __cilkrts_pending_frame *, __cilkrts_obj_metadata *,
     __cilkrts_task_list_node *);
 void __cilkrts_obj_metadata_add_task(
-    __cilkrts_pending_frame *, __cilkrts_obj_metadata *,
+    struct __cilkrts_pending_frame *, __cilkrts_obj_metadata *,
     __cilkrts_task_list_node *, int group);
 
 void __cilkrts_obj_version_init( __cilkrts_obj_version *v,
