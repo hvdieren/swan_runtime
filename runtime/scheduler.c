@@ -2142,14 +2142,17 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode );
  */ 
 static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
 {
+
     full_frame *ff = NULL;
-    // Find a full frame to execute (either through random stealing,
+      // Find a full frame to execute (either through random stealing,
     // or because we pull it off w's 1-element queue).
     while (!ff) {
         // Check worker state to figure out our next action.
+        //printf("checking the status\n");
         switch (worker_runnable(w))    
         {
         case SCHEDULE_RUN:             // One attempt at checking for work.
+            //printf("SCHEDULE_RUN, worker: %d\n", w->self);
             ff = check_for_work(w);
             break;
         case SCHEDULE_WAIT:            // go into wait-mode.
@@ -2158,14 +2161,17 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
             // If we are about to wait, then we better not have
             // a frame that we should execute...
             CILK_ASSERT(NULL == w->l->next_frame_ff);
+            //printf("came into dyn runtime\n");
             notify_children_wait(w);
-            static_scheduler_fn(w->self+1, w->l->signal_node);
+            //static_scheduler_fn(w->self+1, w->l->signal_node);
+            static_scheduler_fn(w->self+1, w->l->signal_node);//with new reversed ids
             // Most likely the following node_wait() will proceed immediately
             // in case the static runtime has been started up.
             signal_node_wait(w->l->signal_node);
             // ...
             // Runtime is waking up.
             notify_children_run(w);
+            
             w->l->steal_failure_count = 0;
             STOP_INTERVAL(w, INTERVAL_SCHEDULE_WAIT);
             break;
@@ -2408,7 +2414,7 @@ static void worker_scheduler_function(__cilkrts_worker *w)
     STOP_INTERVAL(w, INTERVAL_INIT_WORKER);
     
     // The main scheduling loop body.
-
+    //printf("main scheduling loop, worker: %d\n", w->self);
     while (!w->g->work_done) {    
         // Execute the "body" of the scheduling loop, and figure
         // out the fiber to jump to next.
