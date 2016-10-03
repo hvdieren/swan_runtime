@@ -121,7 +121,7 @@ struct __cilkrts_ready_list {
 };
 
 #endif
-
+extern int cilk_rt_up;
 
 // Forwarded declarations
 typedef struct global_state_t        global_state_t;  ///< Forwarded declaration for global state
