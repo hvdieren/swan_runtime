@@ -62,6 +62,7 @@ extern "C" {
 #include "metacall_impl.h"
 #include "global_state.h"
 #include "signal_node.h"
+#include "local_state.h"
 #include <cilk/hyperobject_base.h>
 
 /** added by mahwish**/
@@ -89,7 +90,7 @@ extern "C" {
 #   define CILKRTS_OPTIMIZED 0
 # endif
 #endif
-
+extern int cilk_rt_up;
 typedef unsigned pp_exec_id_t;
 struct pp_exec_t {
     __cilk_abi_f32_t __unused_func;
@@ -159,10 +160,36 @@ static __thread void *hypermap_local_view;
 #define HYPERMAP_GET(tid) (tid==MASTER?HYPERMAP_GET_MASTER:HYPERMAP_GET_WORKER(tid))
 #endif
 
+static void noop(){
+}
+static void notify_children(__cilkrts_worker *w, unsigned int msg)
+{
+    int child_num;
+    __cilkrts_worker *child;
+    int num_sys_workers = w->g->P - 1;
+
+    // If worker is "n", then its children are 2n + 1, and 2n + 2.
+    child_num = (w->self << 1) + 1;
+    if (child_num < num_sys_workers) {
+        child = w->g->workers[child_num];
+        CILK_ASSERT(child->l->signal_node);
+        signal_node_msg(child->l->signal_node, msg);
+        child_num++;
+        if (child_num < num_sys_workers) {
+            child = w->g->workers[child_num];
+            CILK_ASSERT(child->l->signal_node);
+            signal_node_msg(child->l->signal_node, msg);
+        }
+    }
+}
+static void notify_children_run(__cilkrts_worker *w)
+{
+    notify_children(w, 1);
+}
 static bool __init_parallel=false;
-
+//static void noop(){
+//}
 static bool is_up = false;
-
 static void pp_exec_init( pp_exec_t * x, pp_exec_count *c )
 {
     c->xid = false;
@@ -178,6 +205,18 @@ static void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
     }
     else{
         t->num_children= tree_size<3 ? 1: 2;
+	t->child[0]=  t_id-1;	/*left child id*/
+	subtree= tree_size/2;	/*left subtree size*/
+	pp_tree_init( &pp_tree[t->child[0]], subtree, t->child[0]);
+	if(t->num_children>1){
+	    t->child[1]= t_id-(tree_size/2)-1; /*right child id*/
+	    subtree= (tree_size-1)- subtree;	/*right subtree size*/
+	    pp_tree_init( &pp_tree[t->child[1]], subtree, t->child[1] );
+	}
+    }
+    #if 0 //without reversed ids//
+    else{
+        t->num_children= tree_size<3 ? 1: 2;
 	t->child[0]=  t_id+1;	/*left child id*/
 	subtree= tree_size/2;	/*left subtree size*/
 	pp_tree_init( &pp_tree[t->child[0]], subtree, t->child[0]);
@@ -187,6 +226,7 @@ static void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
 	    pp_tree_init( &pp_tree[t->child[1]], subtree, t->child[1] );
 	}
     }
+    #endif
 }
 
 static void
@@ -218,7 +258,7 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
     struct tree_struct *p_tree= &pp_tree[tid];
     struct param *p= &params[tid];
     int num_children;
-    int j;
+    int j,k;
 
     if( ! __init_parallel )
         return;
@@ -238,7 +278,8 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 	    sched_yield();
 	    asm_pause();
 	}
-	
+        for(k=0; k< num_children; k++)
+            printf("thread : %d , child[%d]: %d \n", tid, k, p_tree->child[k]);	
 	// Signal other threads to get going
 	for(j=0; j<num_children; j++) {
 	    pp_exec_submit( p_tree->child[j] );
@@ -263,7 +304,6 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
                = reinterpret_cast<__cilk_abi_f64_t>(capture.body);
            (*body64)( capture.data, p->low64, p->high64 );
        }
-
        // Wait for other threads to complete
        for(j=0; j<num_children; j++) {
            pp_exec_wait(p_tree->child[j]);
@@ -314,10 +354,8 @@ void __parallel_initialize(void) {
 	    cores_per_socket=8;
 	}
     }else{
-	cores_per_socket=12; 
+	cores_per_socket=8; //assume hpdc 
     }
-
-
     /*calculate over how many sockets the threds will be spread, and how many threads/socket*/
     num_socket= (nthreads+cores_per_socket-1)/cores_per_socket;  //assumption: correct number of threads given
     delta_socket= (nthreads + num_socket-1)/ num_socket;
@@ -329,19 +367,29 @@ void __parallel_initialize(void) {
     pp_tree= new struct tree_struct[nthreads];
     params= new struct param[nthreads];
     /* tree structure initialisation*/
+    #if 0// moved the code after id init
     for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
 	int rem= nthreads-nid;
 	int size= std::min(rem, delta_socket);
 	pp_tree_init(&pp_tree[nid],size,nid);
     } 
-
-    //printf("size of pp_exec_t: %d\n", sizeof(pp_exec_t));
+    #endif
     for( i=0; i < nthreads; ++i ) {
-	id[i] =i;
+	//id[i] =i;
+	//pp_exec_c[i].xid=false;
+	id[i] =(nthreads-1)-i; //mirroring ids
 	pp_exec_c[i].xid=false;
     }
+    for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
+	int rem= nthreads-nid;
+	int size= std::min(rem, delta_socket);
+	pp_tree_init(&pp_tree[nid],size,id[nid]);
+    } 
     __init_parallel = true;
     is_up = true;
+    _Cilk_spawn noop();
+    //__cilkrts_worker *w= __cilkrts_get_tls_worker();
+    //   notify_children_run(w);
     printf( "runtime up...\n" );
 }
 
@@ -382,9 +430,13 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
    /******************************IMPLEMENTATION BY MAHWISH*****************************/
     int j, nid, num_children;
     if( ! __init_parallel )
+    {
         __parallel_initialize();
-    // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
+    }
 
+   // notify_children_run(__cilkrts_get_tls_worker());
+    
+    // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
 #if WITH_REDUCERS
      // could use class storage_for_object<> from cilk headers
      hypermap_reducer = hypermap;
@@ -444,8 +496,11 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 
     // TODO: the way we reduce results supports non-commutative
     //       reducers only if we get the tree right!
-
+    //printf("going into wait\n");
     /* wait on child nodes to finish work*/
+    for(int l=0; l<num_children; l++){
+       printf("thread master, child[%d]: %d\n", l, pp_tree[MASTER].child[l]);
+    }
     for(int i=0; i<num_children; i++) {
         pp_exec_wait(pp_tree[MASTER].child[i]);
 #if WITH_REDUCERS
@@ -461,8 +516,10 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
        }
 #endif
     }
-
+   // printf("wait phase 1 ended\n");
+   // printf("wait phase 2 started\n");
     for (int j=1, nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
+    //I will need to do the wait here as well.
 #if WITH_REDUCERS
        if( hypermap_reducer ) {
           // Reduce results from other thread
@@ -475,7 +532,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
        }
 #endif
     }
-
+   // printf("wait phase 2 ended\n");
 #if WITH_REDUCERS
     // The master always uses the leftmost view.
     // The master has thus applied all updates to the final view.
