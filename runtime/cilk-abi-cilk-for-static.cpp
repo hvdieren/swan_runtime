@@ -145,7 +145,7 @@ static int delta_socket;
 static int cores_per_socket;
 static struct capture_data capture;
 
-#define WITH_REDUCERS 1
+#define WITH_REDUCERS 0
 #if WITH_REDUCERS
 #define CACHE_BLOCK_SIZE 64
 static __cilkrts_hyperobject_base *hypermap_reducer;
@@ -162,6 +162,13 @@ static __thread void *hypermap_local_view;
 
 static void noop(){
 }
+/*typedef enum cilk_worker_type
+{
+    WORKER_FREE,    ///< Unused worker - available to be bound to user threads
+    WORKER_SYSTEM,  ///< Worker created by runtime - able to steal from any worker
+    WORKER_USER     ///< User thread - able to steal only from team members
+}
+cilk_worker_type;*/
 static void notify_children(__cilkrts_worker *w, unsigned int msg)
 {
     int child_num;
@@ -205,13 +212,24 @@ static void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
     }
     else{
         t->num_children= tree_size<3 ? 1: 2;
-	t->child[0]=  t_id-1;	/*left child id*/
+	t->child[0]=  (nthreads-1)-(t_id-1);	/*left child id*/
+	subtree= tree_size/2;	/*left subtree size*/
+	pp_tree_init( &pp_tree[t->child[0]], subtree, id[t->child[0]]);
+	#if 0
+        t->child[0]=  t_id-1;	/*left child id*/
 	subtree= tree_size/2;	/*left subtree size*/
 	pp_tree_init( &pp_tree[t->child[0]], subtree, t->child[0]);
-	if(t->num_children>1){
-	    t->child[1]= t_id-(tree_size/2)-1; /*right child id*/
+	#endif
+        if(t->num_children>1){
+	    t->child[1]= (nthreads-1)-(t_id-(tree_size/2)-1); /*right child id*/
+	    subtree= (tree_size-1)- subtree;	/*right subtree size*/
+	    pp_tree_init( &pp_tree[t->child[1]], subtree, id[t->child[1]] );
+	    #if 0
+    i
+            t->child[1]= t_id-(tree_size/2)-1; /*right child id*/
 	    subtree= (tree_size-1)- subtree;	/*right subtree size*/
 	    pp_tree_init( &pp_tree[t->child[1]], subtree, t->child[1] );
+            #endif
 	}
     }
     #if 0 //without reversed ids//
@@ -253,17 +271,21 @@ static void pp_exec_wait( int id )
 void
 static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 {
-    pp_exec_t *x = &pp_exec[tid];
+    int idx= (nthreads-1)-tid;
+    pp_exec_t *x = &pp_exec[idx];
+    pp_exec_count *c = &pp_exec_c[idx];
+    struct tree_struct *p_tree= &pp_tree[idx];
+    struct param *p= &params[idx];
+    /*pp_exec_t *x = &pp_exec[tid];
     pp_exec_count *c = &pp_exec_c[tid];
     struct tree_struct *p_tree= &pp_tree[tid];
-    struct param *p= &params[tid];
+    struct param *p= &params[tid];*/
     int num_children;
     int j,k;
 
     if( ! __init_parallel )
         return;
 
-    // printf( "static sched tid=%d\n", tid );
 
     num_children = p_tree->num_children;
     while( 1 ) {
@@ -278,8 +300,8 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 	    sched_yield();
 	    asm_pause();
 	}
-        for(k=0; k< num_children; k++)
-            printf("thread : %d , child[%d]: %d \n", tid, k, p_tree->child[k]);	
+      /*  for(k=0; k< num_children; k++)
+            printf("thread : %d , child[%d]: %d \n", tid, k, p_tree->child[k]);	*/
 	// Signal other threads to get going
 	for(j=0; j<num_children; j++) {
 	    pp_exec_submit( p_tree->child[j] );
@@ -384,12 +406,21 @@ void __parallel_initialize(void) {
 	int rem= nthreads-nid;
 	int size= std::min(rem, delta_socket);
 	pp_tree_init(&pp_tree[nid],size,id[nid]);
-    } 
+    }
+    int c;
+    /*for(c=0; c < nthreads; c++){
+      printf("\nthread indx: %d, thread id: %d, num_children=%d\n", c, id[c], pp_tree[c].num_children ); 
+      for(j=0; j< pp_tree[c].num_children; j++)
+        printf("child[%d] indx: %d, id: %d\n", j, pp_tree[c].child[j], id[pp_tree[c].child[j]]);
+    }*/
     __init_parallel = true;
     is_up = true;
     _Cilk_spawn noop();
-    //__cilkrts_worker *w= __cilkrts_get_tls_worker();
-    //   notify_children_run(w);
+    __cilkrts_worker *w= __cilkrts_get_tls_worker();
+    //CILK_ASSERT(w->g->workers[0]->l->signal_node);
+    // signal_node_msg(w->g->workers[0]->l->signal_node, 1); //exclusively signal worker 0 
+     notify_children_run(w);
+     //notify_children_run(w->g->workers[0]);
     printf( "runtime up...\n" );
 }
 
@@ -477,8 +508,12 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 
     /* store fence if not TSO/x86-64 */
 
+   
    /* first distribute across socket */
-   for (j=1,  nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
+   /*for (j=1,  nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
+      pp_exec_submit( nid );
+   } */
+   for (j=1,  nid=nthreads-delta_socket-1; j<num_socket; nid-=delta_socket, j++){
       pp_exec_submit( nid );
    } 
     /* now distribute within socket in a tree-like manner */
@@ -498,9 +533,9 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     //       reducers only if we get the tree right!
     //printf("going into wait\n");
     /* wait on child nodes to finish work*/
-    for(int l=0; l<num_children; l++){
+   /* for(int l=0; l<num_children; l++){
        printf("thread master, child[%d]: %d\n", l, pp_tree[MASTER].child[l]);
-    }
+    }*/
     for(int i=0; i<num_children; i++) {
         pp_exec_wait(pp_tree[MASTER].child[i]);
 #if WITH_REDUCERS
@@ -516,8 +551,6 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
        }
 #endif
     }
-   // printf("wait phase 1 ended\n");
-   // printf("wait phase 2 started\n");
     for (int j=1, nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
     //I will need to do the wait here as well.
 #if WITH_REDUCERS
@@ -532,7 +565,6 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
        }
 #endif
     }
-   // printf("wait phase 2 ended\n");
 #if WITH_REDUCERS
     // The master always uses the leftmost view.
     // The master has thus applied all updates to the final view.

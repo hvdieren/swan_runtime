@@ -2164,7 +2164,7 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
             //printf("came into dyn runtime\n");
             notify_children_wait(w);
             //static_scheduler_fn(w->self+1, w->l->signal_node);
-            static_scheduler_fn(w->self+1, w->l->signal_node);//with new reversed ids
+            static_scheduler_fn(w->self, w->l->signal_node);//with new reversed ids
             // Most likely the following node_wait() will proceed immediately
             // in case the static runtime has been started up.
             signal_node_wait(w->l->signal_node);

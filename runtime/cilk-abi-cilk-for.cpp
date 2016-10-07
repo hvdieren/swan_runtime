@@ -57,7 +57,6 @@
 #include "internal/abi.h"
 #include "metacall_impl.h"
 #include "global_state.h"
-
 // Icky macros to determine if we're compiled with optimization.  Based on
 // the declaration of __CILKRTS_ASSERT in common.h
 #if defined(_WIN32)
@@ -333,7 +332,6 @@ static void cilk_for_root(F body, void *data, count_t count, int grain)
     // which will be constant even if we're stolen
     __cilkrts_worker *w = __cilkrts_get_tls_worker();
     __cilkrts_stack_frame *sf = w->current_stack_frame;
-
     // Decrement the rank by one to undo the pedigree change from the
     // _Cilk_spawn
     --w->pedigree.rank;
