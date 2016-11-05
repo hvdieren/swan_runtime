@@ -145,7 +145,7 @@ static int delta_socket;
 static int cores_per_socket;
 static struct capture_data capture;
 
-#define WITH_REDUCERS 0
+#define WITH_REDUCERS 1
 #if WITH_REDUCERS
 #define CACHE_BLOCK_SIZE 64
 static __cilkrts_hyperobject_base *hypermap_reducer;
@@ -342,6 +342,9 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 	   }
 #endif
        }
+#if WITH_REDUCERS
+       hypermap_local_view = 0; // erase
+#endif
        /* Signal we're done */
        c->xid= false;
     } //end if while
@@ -571,6 +574,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     // Unset variables
     hypermap_reducer = 0;
     hypermap_views = 0;
+    hypermap_local_view = 0;
 #endif
 
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
