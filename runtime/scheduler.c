@@ -2152,6 +2152,8 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
         switch (worker_runnable(w))    
         {
         case SCHEDULE_RUN:             // One attempt at checking for work.
+            // First, check for statically scheduled work
+            static_scheduler_fn(w->self, w->l->signal_node);//with new reversed ids
             //printf("SCHEDULE_RUN, worker: %d\n", w->self);
             ff = check_for_work(w);
             break;
