@@ -63,6 +63,7 @@ __cilkrts_get_tls_worker
 __cilkrts_get_tls_worker_fast
 __cilkrts_get_total_workers
 __cilkrts_get_worker_number
+__cilkrts_record_event
 __cilkrts_get_worker_rank
 __cilkrts_global_state
 __cilkrts_hyper_create

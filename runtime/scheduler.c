@@ -89,6 +89,7 @@
 #include "cilk-tbb-interop.h"
 #include "cilk-ittnotify.h"
 #include "stats.h"
+#include "tracing.h"
 
 // ICL: Don't complain about loss of precision in myrand
 // I tried restoring the warning after the function, but it didn't
@@ -1901,6 +1902,8 @@ user_code_resume_after_switch_into_runtime(cilk_fiber *fiber)
     NOTIFY_ZC_INTRINSIC("cilk_continue", sf);
     cilk_fiber_invoke_tbb_stack_op(fiber, CILK_TBB_STACK_ADOPT);
 
+    TRACER_RECORD2(w,"resume",sf,ff);
+
     // Actually jump to user code.
     cilkrts_resume(sf, ff);
  }
@@ -2123,6 +2126,7 @@ static full_frame* check_for_work(__cilkrts_worker *w)
             __cilkrts_yield();
             w->l->steal_failure_count++;
         } else {
+            TRACER_RECORD2(w,"end-search-work",w->l->steal_failure_count,ff);
             // Reset steal_failure_count since there is obviously still work to
             // be done.
             w->l->steal_failure_count = 0;
@@ -2144,9 +2148,13 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
 {
 
     full_frame *ff = NULL;
+
+    TRACER_RECORD0(w,"begin-search-work");
+
       // Find a full frame to execute (either through random stealing,
     // or because we pull it off w's 1-element queue).
     while (!ff) {
+
         // Check worker state to figure out our next action.
         //printf("checking the status\n");
         switch (worker_runnable(w))    
@@ -2169,10 +2177,14 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
             static_scheduler_fn(w->self, w->l->signal_node);//with new reversed ids
             // Most likely the following node_wait() will proceed immediately
             // in case the static runtime has been started up.
+            TRACER_RECORD0(w,"signal_node_wait");
+            notify_children_wait(w);
             signal_node_wait(w->l->signal_node);
             // ...
             // Runtime is waking up.
             notify_children_run(w);
+
+            TRACER_RECORD0(w,"signal_node_wakeup");
             
             w->l->steal_failure_count = 0;
             STOP_INTERVAL(w, INTERVAL_SCHEDULE_WAIT);
@@ -2375,10 +2387,12 @@ static void worker_scheduler_init_function(__cilkrts_worker *w)
 
         // Runtime begins in a wait-state and is woken up by the first user
         // worker when the runtime is ready.
+        TRACER_RECORD0(w,"signal_node_wait");
         signal_node_wait(w->l->signal_node);
         // ...
         // Runtime is waking up.
         notify_children_run(w);
+        TRACER_RECORD0(w,"signal_node_wakeup");
         w->l->steal_failure_count = 0;
         break;
     default:
@@ -2443,6 +2457,8 @@ static void worker_scheduler_function(__cilkrts_worker *w)
             // this point we are IN_RUNTIME already.
         }
     }
+
+    TRACER_RECORD0(w,"all-work-done");
 
     // Finish the scheduling loop.
     worker_scheduler_terminate_function(w);
@@ -2573,6 +2589,8 @@ static void do_sync(__cilkrts_worker *w, full_frame *ff,
 {
     //int abandoned = 1;
     enum provably_good_steal_t steal_result = ABANDON_EXECUTION;
+
+    TRACER_RECORD2(w,"do_sync",sf,ff);
 
     START_INTERVAL(w, INTERVAL_SYNC_CHECK) {
         BEGIN_WITH_WORKER_LOCK_OPTIONAL(w) {
@@ -2809,6 +2827,8 @@ static void do_return_from_spawn(__cilkrts_worker *w,
     full_frame *parent_ff;
     enum provably_good_steal_t steal_result = ABANDON_EXECUTION;
 
+    TRACER_RECORD2(w,"return_from_spawn",sf,ff);
+
     BEGIN_WITH_WORKER_LOCK_OPTIONAL(w) {
         CILK_ASSERT(ff);
         CILK_ASSERT(!ff->is_call_child);
@@ -2851,6 +2871,7 @@ static void do_return_from_spawn(__cilkrts_worker *w,
 
     // Cleanup the child frame.
     __cilkrts_destroy_full_frame(w, ff);
+    TRACER_RECORD2(w,"return_from_spawn_resolved",sf,ff);
     return;
 }
 
@@ -2985,6 +3006,8 @@ void __cilkrts_return(__cilkrts_worker *w)
     STOP_INTERVAL(w, INTERVAL_RETURNING);
     STOP_INTERVAL(w, INTERVAL_IN_RUNTIME);
     START_INTERVAL(w, INTERVAL_WORKING);
+
+    TRACER_RECORD0(w,"cilkrts_return");
 }
 
 static void __cilkrts_unbind_thread()
@@ -3121,6 +3144,8 @@ void __cilkrts_c_return_from_initial(__cilkrts_worker *w)
             w->self,
             w);
 #endif
+
+    TRACER_RECORD0(w,"return_from_initial");
 
     w = NULL;
     
@@ -3266,6 +3291,20 @@ __cilkrts_worker *make_worker(global_state_t *g,
     w->l->replay_list_root = NULL;
     w->l->replay_list_entry = NULL;
     w->l->signal_node = NULL;
+
+    // Initialize tracing
+#if WITH_TRACING
+    {
+        char trace_name[128];
+	snprintf( trace_name, sizeof(trace_name),
+                  "cilkrts-etrace-%u", w->self );
+        w->l->event_tracer = create_event_tracer(trace_name, w->self);
+        TRACER_RECORD0(w,"create-worker");
+    }
+#else
+    w->l->signal_node = NULL;
+#endif
+
     // Nothing's been stolen yet
     w->l->worker_magic_1 = WORKER_MAGIC_1;
 
@@ -3324,6 +3363,11 @@ void destroy_worker(__cilkrts_worker *w)
     if (w->l->signal_node) {
         CILK_ASSERT(WORKER_SYSTEM == w->l->type);
         signal_node_destroy(w->l->signal_node);
+    }
+
+    if(w->l->event_tracer) {
+        TRACER_RECORD0(w,"destroy");
+        destroy_event_tracer(w->l->event_tracer);
     }
 
     __cilkrts_free(w->l->ltq);

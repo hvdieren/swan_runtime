@@ -63,6 +63,7 @@
 #include "global_state.h"
 #include "record-replay.h"
 #include "signal_node.h"
+#include "tracing.h"
 
 #include <setjmp.h>
 #include <stddef.h>
@@ -409,6 +410,11 @@ struct local_state  /* COMMON_PORTABLE */
      */
      signal_node_t *signal_node;
 
+    /**
+     * Tracer object for low-overhead event tracing.
+     */
+    event_tracer_t *event_tracer;
+    
     /** This value should be in the last field in any local_state */
 #   define WORKER_MAGIC_1 ((ls_magic_t)0x16164afb0ea0dff9ULL)
 

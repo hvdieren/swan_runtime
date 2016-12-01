@@ -75,6 +75,7 @@
 #include "local_state.h"
 #include "scheduler.h"
 #include "sysdep.h"
+#include "tracing.h"
 
 CILK_API_VOID __cilkrts_init(void)
 {
@@ -261,6 +262,13 @@ CILK_API_INT __cilkrts_bump_worker_rank_internal(__cilkrts_worker *w)
     pedigree = (w ? &w->pedigree : __cilkrts_get_tls_pedigree_leaf(1));
     pedigree->rank++;
     return 0;
+}
+
+CILK_API_VOID __cilkrts_record_event(__cilkrts_worker *w, const char *e,
+				     intptr_t a, intptr_t b)
+{
+    if( w )
+	record(w->l->event_tracer, e, a, b);
 }
 
 /* End cilk_api.c */

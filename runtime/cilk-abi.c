@@ -76,6 +76,7 @@
 #include "except.h"
 #include "cilk_malloc.h"
 #include "record-replay.h"
+#include "tracing.h"
 
 #include <errno.h>
 #include <string.h>
@@ -141,6 +142,8 @@ void enter_frame_internal(__cilkrts_stack_frame *sf, uint32_t version)
 
     //DBGPRINTF
     // printf("%d-%p enter_frame_internal - sf %p, parent: %p args_tags: %p\n", w->self, w, sf, sf->call_parent, sf->args_tags); /*    */
+
+    TRACER_RECORD2(w,"enter_frame",sf,version);
 }
 
 CILK_ABI_VOID __cilkrts_enter_frame(__cilkrts_stack_frame *sf)
@@ -388,6 +391,8 @@ CILK_ABI_VOID __cilkrts_leave_frame(__cilkrts_stack_frame *sf)
 			     & ~CILK_FRAME_NUMA, 0))
             __cilkrts_bug("W%u: frame won undo-detach race with flags %02x\n",
                           w->self, sf->flags);
+
+	// TRACER_RECORD1(w,"leave_frame_attached",sf);
 
         return;
     }
