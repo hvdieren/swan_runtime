@@ -2136,7 +2136,7 @@ static full_frame* check_for_work(__cilkrts_worker *w)
 }
 
 extern void
-static_scheduler_fn( int tid, signal_node_t * dyn_snode );
+static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode );
 
 /**
  * Keep stealing or looking on our queue.
@@ -2161,7 +2161,7 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
         {
         case SCHEDULE_RUN:             // One attempt at checking for work.
             // First, check for statically scheduled work
-            static_scheduler_fn(w->self, w->l->signal_node);//with new reversed ids
+            static_scheduler_fn(w, w->self, w->l->signal_node);//with new reversed ids
             //printf("SCHEDULE_RUN, worker: %d\n", w->self);
             ff = check_for_work(w);
             break;
@@ -2173,8 +2173,6 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
             CILK_ASSERT(NULL == w->l->next_frame_ff);
             //printf("came into dyn runtime\n");
             notify_children_wait(w);
-            //static_scheduler_fn(w->self+1, w->l->signal_node);
-            static_scheduler_fn(w->self, w->l->signal_node);//with new reversed ids
             // Most likely the following node_wait() will proceed immediately
             // in case the static runtime has been started up.
             TRACER_RECORD0(w,"signal_node_wait");
@@ -2185,6 +2183,9 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
             notify_children_run(w);
 
             TRACER_RECORD0(w,"signal_node_wakeup");
+
+            //static_scheduler_fn(w->self+1, w->l->signal_node);
+            static_scheduler_fn(w, w->self, w->l->signal_node);//with new reversed ids
             
             w->l->steal_failure_count = 0;
             STOP_INTERVAL(w, INTERVAL_SCHEDULE_WAIT);
@@ -2387,7 +2388,7 @@ static void worker_scheduler_init_function(__cilkrts_worker *w)
 
         // Runtime begins in a wait-state and is woken up by the first user
         // worker when the runtime is ready.
-        TRACER_RECORD0(w,"signal_node_wait");
+        TRACER_RECORD0(w,"signal_node_wait_init");
         signal_node_wait(w->l->signal_node);
         // ...
         // Runtime is waking up.
@@ -3572,6 +3573,8 @@ static void init_workers(global_state_t *g)
     }
 }
 
+extern void __parallel_initialize(void);
+
 void __cilkrts_init_internal(int start)
 {
     global_state_t *g = NULL;
@@ -3628,6 +3631,17 @@ void __cilkrts_init_internal(int start)
             __cilkrts_start_workers(g, g->P - 1);
         global_os_mutex_unlock();
     }
+
+    __parallel_initialize();
+}
+
+void __cilkrts_flush_tracers() {
+    global_state_t *g = NULL;
+
+    assert(cilkg_is_published());
+    g = cilkg_init_global_state();
+    for( int i=0; i < g->P; ++i )
+        tracer_flush(g->workers[i]->l->event_tracer);
 }
 
 

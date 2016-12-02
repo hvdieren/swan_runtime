@@ -104,6 +104,7 @@ libcilkrts_la_SOURCES =            \
   runtime/reducer_impl.cpp         \
   runtime/scheduler.c              \
   runtime/signal_node.c            \
+  runtime/tracing.c            \
   runtime/spin_mutex.c             \
   runtime/stats.c                  \
   runtime/sysdep-unix.c            \

@@ -63,6 +63,7 @@ extern "C" {
 #include "global_state.h"
 #include "signal_node.h"
 #include "local_state.h"
+#include "tracing.h"
 #include <cilk/hyperobject_base.h>
 
 /** added by mahwish**/
@@ -269,7 +270,7 @@ static void pp_exec_wait( int id )
 }
 
 void
-static_scheduler_fn( int tid, signal_node_t * dyn_snode )
+static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 {
     int idx= (nthreads-1)-tid;
     pp_exec_t *x = &pp_exec[idx];
@@ -283,9 +284,10 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
     int num_children;
     int j,k;
 
-    if( ! __init_parallel )
+    if( ! __init_parallel ) {
+	TRACER_RECORD0(w,"static-not-init");
         return;
-
+    }
 
     num_children = p_tree->num_children;
     while( 1 ) {
@@ -295,6 +297,7 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 	    // we run, if it says continue, we stop.
 	    if( !signal_node_should_wait( dyn_snode ) ) {
 		// printf( "static sched tid=%d leaving\n", tid );
+		// TRACER_RECORD0(w,"leave-static-scheduler");
 		return;
 	    }
 	    sched_yield();
@@ -317,6 +320,7 @@ static_scheduler_fn( int tid, signal_node_t * dyn_snode )
 #endif
 
        // Execute loop body
+       TRACER_RECORD0(w,"static-work");
        if( capture.is32f ) {
            __cilk_abi_f32_t body32
                = reinterpret_cast<__cilk_abi_f32_t>(capture.body);
@@ -418,11 +422,11 @@ void __parallel_initialize(void) {
     }*/
     __init_parallel = true;
     is_up = true;
-    _Cilk_spawn noop();
-    __cilkrts_worker *w= __cilkrts_get_tls_worker();
+    // _Cilk_spawn noop();
+    // __cilkrts_worker *w= __cilkrts_get_tls_worker();
     //CILK_ASSERT(w->g->workers[0]->l->signal_node);
     // signal_node_msg(w->g->workers[0]->l->signal_node, 1); //exclusively signal worker 0 
-     notify_children_run(w);
+    // notify_children_run(w);
      //notify_children_run(w->g->workers[0]);
     printf( "runtime up...\n" );
 }
@@ -468,7 +472,9 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
         __parallel_initialize();
     }
 
-   // notify_children_run(__cilkrts_get_tls_worker());
+    _Cilk_spawn noop();
+    __cilkrts_worker * w = __cilkrts_get_tls_worker();
+    notify_children_run(w);
     
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
 #if WITH_REDUCERS
@@ -577,6 +583,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     hypermap_local_view = 0;
 #endif
 
+    TRACER_RECORD0(w,"leave-static-for-root");
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
 }
 
