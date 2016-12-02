@@ -295,18 +295,22 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
         while( *((volatile bool*)&c->xid) == false) {
 	    // We are polling Cilk's thread signal node. If it says wait,
 	    // we run, if it says continue, we stop.
-	    if( !signal_node_should_wait( dyn_snode ) ) {
+	    // User workers do not have signal nodes
+	    if( !dyn_snode || !signal_node_should_wait( dyn_snode ) ) {
 		// printf( "static sched tid=%d leaving\n", tid );
 		// TRACER_RECORD0(w,"leave-static-scheduler");
 		return;
 	    }
 	    sched_yield();
 	    asm_pause();
+	    // Record a steal failure and return to dynamic scheduler
+            // w->l->steal_failure_count++;
 	}
       /*  for(k=0; k< num_children; k++)
             printf("thread : %d , child[%d]: %d \n", tid, k, p_tree->child[k]);	*/
 	// Signal other threads to get going
 	for(j=0; j<num_children; j++) {
+	    TRACER_RECORD1(w,"submit-child",p_tree->child[j]);
 	    pp_exec_submit( p_tree->child[j] );
         }
 
@@ -333,6 +337,7 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
        // Wait for other threads to complete
        for(j=0; j<num_children; j++) {
            pp_exec_wait(p_tree->child[j]);
+	   TRACER_RECORD1(w,"wait-child",p_tree->child[j]);
 #if WITH_REDUCERS
 	   if( hypermap_reducer ) {
 	       // Reduce results from other thread
@@ -472,8 +477,11 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
         __parallel_initialize();
     }
 
+    // Spawn a no-op task such that we are bound to a Cilk worker
     _Cilk_spawn noop();
     __cilkrts_worker * w = __cilkrts_get_tls_worker();
+
+    // Ensure all aboard
     notify_children_run(w);
     
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
@@ -523,11 +531,13 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
       pp_exec_submit( nid );
    } */
    for (j=1,  nid=nthreads-delta_socket-1; j<num_socket; nid-=delta_socket, j++){
-      pp_exec_submit( nid );
+       TRACER_RECORD1(w,"submit-numa",nid);
+       pp_exec_submit( nid );
    } 
     /* now distribute within socket in a tree-like manner */
     num_children = pp_tree[MASTER].num_children;
     for(int i=0; i<num_children; i++){
+	TRACER_RECORD1(w,"submit-mchild",pp_tree[MASTER].child[i]);
 	pp_exec_submit( pp_tree[MASTER].child[i] );
     }
 
@@ -547,6 +557,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     }*/
     for(int i=0; i<num_children; i++) {
         pp_exec_wait(pp_tree[MASTER].child[i]);
+	TRACER_RECORD1(w,"wait-mchild",pp_tree[MASTER].child[i]);
 #if WITH_REDUCERS
        if( hypermap_reducer ) {
           // Reduce results from other thread
@@ -560,8 +571,10 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
        }
 #endif
     }
-    for (int j=1, nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
-    //I will need to do the wait here as well.
+    for (j=1,  nid=nthreads-delta_socket-1; j<num_socket; nid-=delta_socket, j++){
+	// Wait on tree roots on other sockets
+	pp_exec_wait( nid );
+	TRACER_RECORD1(w,"wait-numa",nid);
 #if WITH_REDUCERS
        if( hypermap_reducer ) {
           // Reduce results from other thread

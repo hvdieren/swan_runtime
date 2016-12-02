@@ -3303,7 +3303,7 @@ __cilkrts_worker *make_worker(global_state_t *g,
         TRACER_RECORD0(w,"create-worker");
     }
 #else
-    w->l->signal_node = NULL;
+    w->l->event_tracer = NULL;
 #endif
 
     // Nothing's been stolen yet
