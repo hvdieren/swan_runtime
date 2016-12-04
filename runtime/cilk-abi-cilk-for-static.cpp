@@ -356,6 +356,7 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 #endif
        /* Signal we're done */
        c->xid= false;
+       TRACER_RECORD0(w,"static-work-done");
     } //end if while
 }
 
@@ -387,6 +388,9 @@ void __parallel_initialize(void) {
 	else if(strcmp(env_n,"hpdc")==0){
 	    cores_per_socket=8;
 	}
+	else if(strcmp(env_n,"bouillon")==0){
+	    cores_per_socket=256;
+	}
     }else{
 	cores_per_socket=8; //assume hpdc 
     }
@@ -415,7 +419,9 @@ void __parallel_initialize(void) {
 	pp_exec_c[i].xid=false;
     }
     for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
+    // for (j=0,  nid=nthreads-1; j<num_socket; nid-=delta_socket, j++){
 	int rem= nthreads-nid;
+	// int rem= nid+1;
 	int size= std::min(rem, delta_socket);
 	pp_tree_init(&pp_tree[nid],size,id[nid]);
     }
@@ -478,11 +484,13 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     }
 
     // Spawn a no-op task such that we are bound to a Cilk worker
-    _Cilk_spawn noop();
-    __cilkrts_worker * w = __cilkrts_get_tls_worker();
+    // _Cilk_spawn noop();
+    // __cilkrts_worker * w = __cilkrts_get_tls_worker();
 
     // Ensure all aboard
-    notify_children_run(w);
+    // notify_children_run(w);
+
+    // assert( id[w->self] == MASTER );
     
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
 #if WITH_REDUCERS
@@ -531,13 +539,13 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
       pp_exec_submit( nid );
    } */
    for (j=1,  nid=nthreads-delta_socket-1; j<num_socket; nid-=delta_socket, j++){
-       TRACER_RECORD1(w,"submit-numa",nid);
+       // TRACER_RECORD1(w,"submit-numa",nid);
        pp_exec_submit( nid );
    } 
     /* now distribute within socket in a tree-like manner */
     num_children = pp_tree[MASTER].num_children;
     for(int i=0; i<num_children; i++){
-	TRACER_RECORD1(w,"submit-mchild",pp_tree[MASTER].child[i]);
+	// TRACER_RECORD1(w,"submit-mchild",pp_tree[MASTER].child[i]);
 	pp_exec_submit( pp_tree[MASTER].child[i] );
     }
 
@@ -557,7 +565,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     }*/
     for(int i=0; i<num_children; i++) {
         pp_exec_wait(pp_tree[MASTER].child[i]);
-	TRACER_RECORD1(w,"wait-mchild",pp_tree[MASTER].child[i]);
+	// TRACER_RECORD1(w,"wait-mchild",pp_tree[MASTER].child[i]);
 #if WITH_REDUCERS
        if( hypermap_reducer ) {
           // Reduce results from other thread
@@ -574,7 +582,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     for (j=1,  nid=nthreads-delta_socket-1; j<num_socket; nid-=delta_socket, j++){
 	// Wait on tree roots on other sockets
 	pp_exec_wait( nid );
-	TRACER_RECORD1(w,"wait-numa",nid);
+	// TRACER_RECORD1(w,"wait-numa",nid);
 #if WITH_REDUCERS
        if( hypermap_reducer ) {
           // Reduce results from other thread
@@ -596,7 +604,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     hypermap_local_view = 0;
 #endif
 
-    TRACER_RECORD0(w,"leave-static-for-root");
+    // TRACER_RECORD0(w,"leave-static-for-root");
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
 }
 
