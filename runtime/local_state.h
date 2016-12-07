@@ -414,6 +414,14 @@ struct local_state  /* COMMON_PORTABLE */
      * Tracer object for low-overhead event tracing.
      */
     event_tracer_t *event_tracer;
+
+    /**
+     * NUMA information. It is assumed that threads are pinned using an
+     * external thread pinning tool. During initialisation, threads
+     * determine their NUMA information which is cached here.
+     */
+    int numa_node;       ///< index of NUMA node thread is executing on
+    int numa_local_self; ///< intra-node sequence number for thread
     
     /** This value should be in the last field in any local_state */
 #   define WORKER_MAGIC_1 ((ls_magic_t)0x16164afb0ea0dff9ULL)

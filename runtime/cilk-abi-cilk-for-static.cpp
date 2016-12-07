@@ -65,6 +65,8 @@ extern "C" {
 #include "local_state.h"
 #include "tracing.h"
 #include <cilk/hyperobject_base.h>
+#include "os.h"
+#include "numa.h"
 
 /** added by mahwish**/
 #define MASTER 0
@@ -163,6 +165,49 @@ static __thread void *hypermap_local_view;
 
 static void noop(){
 }
+
+/*
+ * Compiler-generated helper routines.
+ * Assign distinct name to avoid triggering a bug in clang/opt related
+ * to incompatible argument types on clang's internal __cilkrts_stack_frame
+ * type vs. the type used in source code.
+ *
+ * FIXME: use capture_spawn_arg_stack_frame to update the NUMA settings
+ *        on the stack frame. That would allow the use of _Cilk_spawn and
+ *        avoid the replication of the routines below
+ */
+static void __cilkrts_inline_detach(struct __cilkrts_stack_frame *self) {
+    struct __cilkrts_worker *w = self->worker;
+    struct __cilkrts_stack_frame *parent = self->call_parent;
+    struct __cilkrts_stack_frame *volatile *tail = w->tail;
+
+    self->spawn_helper_pedigree.rank = w->pedigree.rank;
+    self->spawn_helper_pedigree.parent = w->pedigree.parent;
+
+    self->call_parent->parent_pedigree.rank = w->pedigree.rank;
+    self->call_parent->parent_pedigree.parent = w->pedigree.parent;
+
+    w->pedigree.rank = 0;
+    w->pedigree.parent = &self->spawn_helper_pedigree;
+
+/*assert (tail < w->ltq_limit);*/
+    *tail++ = parent;
+
+/* The stores are separated by a store fence (noop on x86)
+   or the second store is a release (st8.rel on Itanium) */
+    w->tail = tail;
+    self->flags |= CILK_FRAME_DETACHED;
+}
+
+static void __cilkrts_inline_pop_frame(struct __cilkrts_stack_frame *sf) {
+    struct __cilkrts_worker *w = sf->worker;
+    w->current_stack_frame = sf->call_parent;
+    sf->call_parent = 0;
+}
+
+
+
+    
 /*typedef enum cilk_worker_type
 {
     WORKER_FREE,    ///< Unused worker - available to be bound to user threads
@@ -477,20 +522,70 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 #endif
 {
    /******************************IMPLEMENTATION BY MAHWISH*****************************/
+    struct __cilkrts_stack_frame sf;
     int j, nid, num_children;
+
+    // Ensure we have a worker so that we can probe the global state
+    // of the scheduler. Typically we need to enter the runtime when we call
+    // this method. This also initializes the static runtime part.
+    // Note that we do not want to use the trick '_Cilk_spawn noop()' because
+    // that allows the current frame to be stolen while noop() executes, which
+    // means we won't know for sure who is the master and who is the slave.
+    __cilkrts_enter_frame_1(&sf);
+
+    // Get the worker. Could also read it out of sf (faster).
+    __cilkrts_worker * w = __cilkrts_get_tls_worker();
+    
     if( ! __init_parallel )
     {
+	fprintf( stderr,
+		 "Really, do we still need to initialize the static runtime?\n" );
         __parallel_initialize();
     }
 
-    // Spawn a no-op task such that we are bound to a Cilk worker
-    // _Cilk_spawn noop();
-    // __cilkrts_worker * w = __cilkrts_get_tls_worker();
+    // Ensure all workers are awake
+    notify_children_run(w);
 
-    // Ensure all aboard
-    // notify_children_run(w);
+    // Ensure all workers have recorded their NUMA information.
+    // Note that user workers do not record their information in the same way!
+    while( w->g->numa_P_init != w->g->system_workers ) {
+	__cilkrts_yield();
+    }
 
-    // assert( id[w->self] == MASTER );
+    // Check if we are called with NUMA restrictions in the stack frame.
+    // If so, we should only use the workers on our own NUMA node. Else,
+    // we can use all workers.
+    bool system_wide = ( sf.flags & CILK_FRAME_NUMA ) ? false : true;
+    printf( "Cilk-static: system_wide=%d\n", (int)system_wide );
+
+    // Determine our own NUMA node
+    int master_numa_node;
+    {
+	int cpu = sched_getcpu();
+	if( cpu >= 0 ) 
+	    master_numa_node = numa_node_of_cpu(cpu);
+	else
+	    master_numa_node = 0; // always works?
+    }
+    
+    // Allocate workers (by NUMA node)
+    int numa_nodes[w->g->numa_nodes];
+    int num_numa_nodes = 0;
+    if( system_wide ) {
+	for( int i=0; i < w->g->numa_nodes; ++i ) {
+	    if( w->g->numa_allocate[i] != 0 )
+		continue;
+	    if( __sync_bool_compare_and_swap( &w->g->numa_allocate[i], 0, 1 ) )
+		numa_nodes[num_numa_nodes++] = i;
+	}
+    } else {
+	if( w->g->numa_allocate[master_numa_node] == 0 ) {
+	    if( __sync_bool_compare_and_swap(
+		    &w->g->numa_allocate[master_numa_node], 0, 1 ) )
+		numa_nodes[num_numa_nodes++] = master_numa_node;
+	}
+    }
+    printf( "Cilk-static: allocated %d NUMA nodes\n", num_numa_nodes );
     
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
 #if WITH_REDUCERS
@@ -514,30 +609,31 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
      hypermap_local_view = hypermap_reducer ? HYPERMAP_GET(MASTER) : 0;
 #endif
 
-    capture.body = reinterpret_cast<void *>(body);
-    capture.data = data;
-    capture.is32f = is_32f<F>::value;
-    if( capture.is32f ) {
-       count_t delta = (count+nthreads-1)/nthreads;
-       for (int i=0; i<nthreads; i++){
-           params[i].low32 = std::min((delta)*i,count);
-           params[i].high32 = std::min(delta*(i+1),count);
-       }
-    } else {
-       count_t delta = (count+nthreads-1)/nthreads;
-       for (int i=0; i<nthreads; i++){
-           params[i].low64 = std::min((delta)*i,count);
-           params[i].high64 = std::min(delta*(i+1),count);
-       }
-    }
+     // If we have multiple per-NUMA schedulers, then we also need the
+     // capture to be private per NUMA domain
+     capture.body = reinterpret_cast<void *>(body);
+     capture.data = data;
+     capture.is32f = is_32f<F>::value;
 
-    /* store fence if not TSO/x86-64 */
+     // This data is per-thread and may remain shared
+     if( capture.is32f ) {
+	 count_t delta = (count+nthreads-1)/nthreads;
+	 for (int i=0; i<nthreads; i++){
+	     params[i].low32 = std::min((delta)*i,count);
+	     params[i].high32 = std::min(delta*(i+1),count);
+	 }
+     } else {
+	 count_t delta = (count+nthreads-1)/nthreads;
+	 for (int i=0; i<nthreads; i++){
+	     params[i].low64 = std::min((delta)*i,count);
+	     params[i].high64 = std::min(delta*(i+1),count);
+	 }
+     }
+
+     // store fence if not TSO/x86-64
 
    
-   /* first distribute across socket */
-   /*for (j=1,  nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
-      pp_exec_submit( nid );
-   } */
+     // first distribute across socket
    for (j=1,  nid=nthreads-delta_socket-1; j<num_socket; nid-=delta_socket, j++){
        // TRACER_RECORD1(w,"submit-numa",nid);
        pp_exec_submit( nid );
@@ -606,6 +702,22 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 
     // TRACER_RECORD0(w,"leave-static-for-root");
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
+
+    // De-allocate NUMA scheduling domains
+    for( int i=0; i < num_numa_nodes; ++i )
+	w->g->numa_allocate[numa_nodes[i]] = 0;
+
+    /* This bit is redundant as we do not spawn from within this procedure
+    if( sf.flags & CILK_FRAME_UNSYNCHED ) {
+	if( !CILK_SETJMP(sf.ctx) )
+	    __cilkrts_sync( &sf );
+    }
+    */
+
+    // Cleanup and unlink stack frame
+    __cilkrts_inline_pop_frame(&sf);
+    if( sf.flags )
+	__cilkrts_leave_frame(&sf);
 }
 
 // Use extern "C" to suppress name mangling of __cilkrts_cilk_for_32 and

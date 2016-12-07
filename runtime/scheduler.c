@@ -69,6 +69,7 @@
 #include <string.h> /* memcpy */
 #include <stdio.h>  // sprintf
 #include <stdlib.h> // malloc, free, abort
+#include <numa.h>
 
 #ifdef _WIN32
 #   pragma warning(disable:1786)   // disable warning: sprintf is deprecated
@@ -2377,6 +2378,36 @@ static void worker_scheduler_init_function(__cilkrts_worker *w)
     // you may see a subtle performance bug...
     mysrand(w, (w->self + 1));
 
+    // Set NUMA information
+    if( w->l->type == WORKER_SYSTEM ) {
+        int cpu = sched_getcpu();
+        if( cpu < 0 ) { // Error, errno explains what
+            fprintf( stderr, "getcpu() error: %d: %s\n", errno, strerror(errno) );
+            cpu = 0;
+        }
+        int node = numa_node_of_cpu(cpu);
+        if( node < 0 ) { // Error, errno explains what
+            fprintf( stderr, "node_of_cpu(%d) error: %d: %s\n", cpu, errno, strerror(errno) );
+            node = 0;
+        }
+        if( node >= w->g->numa_nodes ) {
+            fprintf( stderr, "node_of_cpu(%d) error: node %d exceeds "
+                     "maximum node number %d\n", cpu, node, w->g->numa_nodes );
+            node = 0;
+        }
+        w->l->numa_node = node;
+        w->l->numa_local_self =
+            __sync_fetch_and_add(&w->g->numa_node_threads[w->l->numa_node], 1);
+
+        printf( "Worker self=%d type=%d on NUMA node %d, local index %d\n",
+                w->self, (int)w->l->type, w->l->numa_node, w->l->numa_local_self );
+
+        // The following ensures that the static scheduler is not invoked
+        // until all threads have recorded their NUMA information.
+        // store fence
+        __sync_fetch_and_add(&w->g->numa_P_init, 1);
+    }
+
     // The startup work varies, depending on the worker type.
     switch (w->l->type) {
     case WORKER_USER:
@@ -3310,6 +3341,8 @@ __cilkrts_worker *make_worker(global_state_t *g,
     w->l->worker_magic_1 = WORKER_MAGIC_1;
 
     /*w->parallelism_disabled = 0;*/
+
+    w->l->numa_local_self = -1; // flag not yet initialised
 
     // Allow stealing all frames. Sets w->saved_protected_tail
     __cilkrts_restore_stealing(w, w->ltq_limit);

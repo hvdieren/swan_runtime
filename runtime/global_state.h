@@ -267,6 +267,18 @@ struct global_state_t { /* COMMON_PORTABLE */
 
     int P;         ///< USER SETTING: number of system workers + 1 (fixed)
     int Q;         ///< Number of user threads currently bound to workers 
+
+    /**
+     * NUMA information. It is assumed that threads are pinned using an
+     * external thread pinning tool. During initialisation, threads
+     * determine their NUMA information which is cached here.
+     * Most of these are fixed after initialization, part of which is done by
+     * the system worker threads themselves.
+     */
+    int numa_nodes;           ///< number of NUMA nodes in system
+    int *numa_node_threads;   ///< number of threads on each NUMA node (cached)
+    int *numa_allocate;       ///< allocation status of NUMA nodes (not fixed)
+    volatile int numa_P_init; ///< number of NUMA threads fully initialized
 };
 
 /**
