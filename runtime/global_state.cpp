@@ -584,10 +584,13 @@ global_state_t* cilkg_init_global_state()
     g->numa_nodes = numa_num_configured_nodes();
     g->numa_node_threads
 	= (int*)__cilkrts_malloc(sizeof(*g->numa_node_threads)*g->numa_nodes);
+    g->numa_node_cum_threads
+	= (int*)__cilkrts_malloc(sizeof(*g->numa_node_cum_threads)*g->numa_nodes);
     g->numa_allocate
 	= (int*)__cilkrts_malloc(sizeof(*g->numa_allocate)*g->numa_nodes);
     for( int i=0; i < g->numa_nodes; ++i ) {
 	g->numa_node_threads[i] = 0;
+	g->numa_node_cum_threads[i] = 0;
 	g->numa_allocate[i] = 0;
     }
     g->numa_P_init = 0;

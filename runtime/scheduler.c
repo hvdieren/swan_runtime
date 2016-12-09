@@ -2398,6 +2398,8 @@ static void worker_scheduler_init_function(__cilkrts_worker *w)
         w->l->numa_node = node;
         w->l->numa_local_self =
             __sync_fetch_and_add(&w->g->numa_node_threads[w->l->numa_node], 1);
+        for( int i=w->l->numa_node+1; i < w->g->numa_nodes; ++i )
+            __sync_fetch_and_add(&w->g->numa_node_cum_threads[i], 1);
 
         printf( "Worker self=%d type=%d on NUMA node %d, local index %d\n",
                 w->self, (int)w->l->type, w->l->numa_node, w->l->numa_local_self );
