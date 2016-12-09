@@ -278,7 +278,6 @@ struct global_state_t { /* COMMON_PORTABLE */
     int numa_nodes;           ///< number of NUMA nodes in system
     int *numa_node_threads;   ///< number of threads on each NUMA node (cached)
     int *numa_allocate;       ///< allocation status of NUMA nodes (not fixed)
-    void **numa_state;        ///< per-NUMA node scheduler state (not fixed)
     volatile int numa_P_init; ///< number of NUMA threads fully initialized
 };
 

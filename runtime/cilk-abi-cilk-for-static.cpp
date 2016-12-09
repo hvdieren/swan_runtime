@@ -103,9 +103,19 @@ struct pp_exec_t {
     bool __unused_control;
     char pad[30];
 };
+struct capture_data {
+    void *body;
+    void *data;
+    bool is32f;
+};
+
+struct static_numa_state {
+    struct capture_data capture;
+};
+
 struct pp_exec_count{
-  bool xid;
-  char padd[63];
+    struct static_numa_state *xid;
+    char padd[64-sizeof(struct static_numa_state *)];
 
 };
 struct param {
@@ -130,16 +140,6 @@ struct tree_struct{
 };
 typedef struct pp_exec_t pp_exec_t;
 typedef struct pp_exec_count pp_exec_count;
-
-struct capture_data {
-    void *body;
-    void *data;
-    bool is32f;
-};
-
-struct static_numa_state {
-    struct capture_data capture;
-};
 
 static pp_exec_t *pp_exec;
 static pp_exec_count *pp_exec_c;
@@ -249,7 +249,7 @@ static bool __init_parallel=false;
 static bool is_up = false;
 static void pp_exec_init( pp_exec_t * x, pp_exec_count *c )
 {
-    c->xid = false;
+    c->xid = 0;
    // x->argc =0;
   
 }
@@ -297,26 +297,29 @@ static void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
     #endif
 }
 
+#if 0
 static void
 pp_exec_submit(int id)
 {
-    // bool xid;
     pp_exec_t *x= &pp_exec[id];
     pp_exec_count *c= &pp_exec_c[id];
     // xid= c->xid;
     c->xid= true;
     // assert(xid != c->xid);
 }
+#endif
 static void asm_pause()
 {
     // should help hyperthreads
     // __asm__ __volatile__( "pause" : : : );
 }
+#if 0
 static void pp_exec_wait( int id )
 {
    pp_exec_count *c= &pp_exec_c[id];
    while( c->xid==true) sched_yield();
 }
+#endif
 
 static bool
 static_numa_scheduler_once( __cilkrts_worker *w ) {
@@ -347,11 +350,14 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 	pp_exec_count *c = &pp_exec_c[my_idx];
 
 	/* Busy wait loop for fast response */
-        while( *((volatile bool*)&c->xid) == false) {
+        while( *((volatile void**)&c->xid) == 0) {
 	    __cilkrts_yield();
 	}
 	printf( "Worker %d received ok to run\n", my_idx );
     }
+
+    // This is how we get the state
+    struct static_numa_state * s = pp_exec_c[my_idx].xid;
 
     for( int p=log_threads; p > 0; --p ) {
 	int mask = (1<<p)-1;
@@ -360,7 +366,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 	    int dst_idx = my_idx | (1<<(p-1));
 	    if( dst_idx < num_threads ) {
 		pp_exec_count *c = &pp_exec_c[dst_idx];
-		c->xid = true;
+		c->xid = s;
 		printf( "Worker %d signaled %d ok to run\n", my_idx, dst_idx );
 	    }
 	}
@@ -368,10 +374,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 
     // Execute loop body
     TRACER_RECORD0(w,"static-work");
-    struct static_numa_state * s
-	= (struct static_numa_state *)w->g->numa_state[numa_node];
-    printf( "Worker %d read state %p from %p numa=%d\n", my_idx, s,
-	    &w->g->numa_state[numa_node], numa_node );
+    printf( "Worker %d read state %p numa=%d\n", my_idx, s, numa_node );
     struct param *p= &params[my_idx]; // TODO: get offset through numa_state
     if( s->capture.is32f ) {
 	__cilk_abi_f32_t body32
@@ -392,7 +395,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 		pp_exec_count *c = &pp_exec_c[dst_idx];
 
 		/* Busy wait loop for fast response */
-		while( *((volatile bool*)&c->xid) == true ) {
+		while( *((volatile void**)&c->xid) != 0 ) {
 		    __cilkrts_yield();
 		}
 		printf( "Worker %d received completion from %d\n", my_idx, dst_idx );
@@ -401,10 +404,9 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
     }
 
     // Signal threads that we are done
-    if( 1 /*my_idx != 0*/ ) {
-	// int src_idx = (my_idx & 1) ? (my_idx ^ 1) : (my_idx >> 1);
+    {
 	pp_exec_count *c = &pp_exec_c[my_idx];
-	c->xid = false;
+	c->xid = 0;
 	printf( "Worker %d signaled done\n", my_idx );
     }
 
@@ -464,7 +466,7 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
     num_children = p_tree->num_children;
     while( 1 ) {
 	/* Busy wait loop for fast response */
-        while( *((volatile bool*)&c->xid) == false) {
+        while( *((volatile void**)&c->xid) == false) {
 	    // We are polling Cilk's thread signal node. If it says wait,
 	    // we run, if it says continue, we stop.
 	    // User workers do not have signal nodes
@@ -589,7 +591,7 @@ void __parallel_initialize(void) {
 	//id[i] =i;
 	//pp_exec_c[i].xid=false;
 	id[i] =(nthreads-1)-i; //mirroring ids
-	pp_exec_c[i].xid=false;
+	pp_exec_c[i].xid=0;
     }
     for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
     // for (j=0,  nid=nthreads-1; j<num_socket; nid-=delta_socket, j++){
@@ -771,13 +773,8 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	     params[i].high64 = std::min(delta*(i+1),count);
 	 }
      }
-     // TODO: send state pointer instead of 0/1 flag
-     for( int i=0; i < num_numa_nodes; ++i )
-	 w->g->numa_state[numa_nodes[i]] = &s;
-     printf( "published state %p to %p\n", &s, (void *)&w->g->numa_state[numa_nodes[0]] );
 
      // store fence if not TSO/x86-64
-
    
 #if 0
      // first distribute across socket
@@ -796,7 +793,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     // Distribute work across sockets
     for( int i=0; i < num_numa_nodes; ++i ) {
 	pp_exec_count *c = &pp_exec_c[0]; // First thread on NUMA node
-	c->xid = true;
+	c->xid = &s;
     }
 
     /* now go on and do the work */
@@ -810,7 +807,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	pp_exec_count *c = &pp_exec_c[0]; // First thread on NUMA node
 
 	/* Busy wait loop for fast response */
-        while( *((volatile bool*)&c->xid) == true) {
+        while( *((volatile void**)&c->xid) != 0 ) {
 	    __cilkrts_yield();
 	}
 	printf( "thread local 0 on node %d completed\n", numa_nodes[i] );
@@ -874,7 +871,6 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     printf( "cleaning up...\n" );
     for( int i=0; i < num_numa_nodes; ++i ) {
 	w->g->numa_allocate[numa_nodes[i]] = 0;
-	w->g->numa_state[numa_nodes[i]] = 0;
     }
 
     /* This bit is redundant as we do not spawn from within this procedure
