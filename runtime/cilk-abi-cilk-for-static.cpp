@@ -95,14 +95,6 @@ extern "C" {
 #endif
 extern int cilk_rt_up;
 typedef unsigned pp_exec_id_t;
-struct pp_exec_t {
-    __cilk_abi_f32_t __unused_func;
-    void * __unused_arg;
-    pp_exec_id_t __unused_t_id;
-    //int argc;
-    bool __unused_control;
-    char pad[30];
-};
 struct capture_data {
     void *body;
     void *data;
@@ -123,34 +115,9 @@ struct pp_exec_count{
     char padd[64-sizeof(struct static_numa_state *)];
 
 };
-struct param {
-    cilk32_t low32;
-    cilk32_t high32;
-    cilk64_t low64;
-    cilk64_t high64;
-    uint64_t * __unused_out;
-    int __unused_off;
-    char * __unused_data;
-    char padd[8];
-};
-struct tree_struct{
-   int t_id;
-   int tree_size;
-   int num_children;
-   int child[2];
-   uint64_t start_i;
-   uint64_t stop_i;
-   uint64_t delta;
-   char padd[12];
-};
-typedef struct pp_exec_t pp_exec_t;
 typedef struct pp_exec_count pp_exec_count;
 
-static pp_exec_t *pp_exec;
 static pp_exec_count *pp_exec_c;
-static struct param *params;
-static int *id;
-static struct tree_struct *pp_tree;
 static int nthreads;
 static int num_socket;
 static int delta_socket;
@@ -171,9 +138,6 @@ static __thread void *hypermap_local_view;
 #define HYPERMAP_GET_MASTER (void*)(((char*)hypermap_reducer)+hypermap_reducer->__view_offset)
 #define HYPERMAP_GET(tid) (tid==MASTER?HYPERMAP_GET_MASTER:HYPERMAP_GET_WORKER(tid))
 #endif
-
-static void noop(){
-}
 
 /*
  * Compiler-generated helper routines.
@@ -249,82 +213,11 @@ static void notify_children_run(__cilkrts_worker *w)
     notify_children(w, 1);
 }
 static bool __init_parallel=false;
-//static void noop(){
-//}
-static bool is_up = false;
-static void pp_exec_init( pp_exec_t * x, pp_exec_count *c )
-{
-    c->xid = 0;
-   // x->argc =0;
-  
-}
-static void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
-{
-    int subtree=0;
-    t->t_id= t_id;
-    if(tree_size <2){	/*leaf node*/
-         t->num_children=0;
-    }
-    else{
-        t->num_children= tree_size<3 ? 1: 2;
-	t->child[0]=  (nthreads-1)-(t_id-1);	/*left child id*/
-	subtree= tree_size/2;	/*left subtree size*/
-	pp_tree_init( &pp_tree[t->child[0]], subtree, id[t->child[0]]);
-	#if 0
-        t->child[0]=  t_id-1;	/*left child id*/
-	subtree= tree_size/2;	/*left subtree size*/
-	pp_tree_init( &pp_tree[t->child[0]], subtree, t->child[0]);
-	#endif
-        if(t->num_children>1){
-	    t->child[1]= (nthreads-1)-(t_id-(tree_size/2)-1); /*right child id*/
-	    subtree= (tree_size-1)- subtree;	/*right subtree size*/
-	    pp_tree_init( &pp_tree[t->child[1]], subtree, id[t->child[1]] );
-	    #if 0
-    i
-            t->child[1]= t_id-(tree_size/2)-1; /*right child id*/
-	    subtree= (tree_size-1)- subtree;	/*right subtree size*/
-	    pp_tree_init( &pp_tree[t->child[1]], subtree, t->child[1] );
-            #endif
-	}
-    }
-    #if 0 //without reversed ids//
-    else{
-        t->num_children= tree_size<3 ? 1: 2;
-	t->child[0]=  t_id+1;	/*left child id*/
-	subtree= tree_size/2;	/*left subtree size*/
-	pp_tree_init( &pp_tree[t->child[0]], subtree, t->child[0]);
-	if(t->num_children>1){
-	    t->child[1]= t_id+(tree_size/2)+1; /*right child id*/
-	    subtree= (tree_size-1)- subtree;	/*right subtree size*/
-	    pp_tree_init( &pp_tree[t->child[1]], subtree, t->child[1] );
-	}
-    }
-    #endif
-}
-
-#if 0
-static void
-pp_exec_submit(int id)
-{
-    pp_exec_t *x= &pp_exec[id];
-    pp_exec_count *c= &pp_exec_c[id];
-    // xid= c->xid;
-    c->xid= true;
-    // assert(xid != c->xid);
-}
-#endif
 static void asm_pause()
 {
     // should help hyperthreads
     // __asm__ __volatile__( "pause" : : : );
 }
-#if 0
-static void pp_exec_wait( int id )
-{
-   pp_exec_count *c= &pp_exec_c[id];
-   while( c->xid==true) sched_yield();
-}
-#endif
 
 static void
 static_execute_capture( struct capture_data * c, int my_idx, int my_slot ) {
@@ -408,7 +301,6 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
     // Execute loop body
     TRACER_RECORD0(w,"static-work");
     printf( "Worker %d (%d) read state %p numa=%d\n", my_idx, my_slot, s, numa_node );
-    // struct param *p= &params[my_slot];
     static_execute_capture( &s->capture, my_idx, my_slot );
     
     // Wait for completion of other threads
@@ -589,48 +481,9 @@ void __parallel_initialize(void) {
     num_socket= (nthreads+cores_per_socket-1)/cores_per_socket;  //assumption: correct number of threads given
     delta_socket= (nthreads + num_socket-1)/ num_socket;
     /*allocate memory for data structures*/
-    // pp_tree= (struct tree_struct *) malloc(nthreads * sizeof(struct tree_struct));
-    pp_exec = new pp_exec_t[nthreads];
     pp_exec_c = new pp_exec_count[nthreads];
-    id= new int[nthreads];
-    pp_tree= new struct tree_struct[nthreads];
-    params= new struct param[nthreads];
-    /* tree structure initialisation*/
-    #if 0// moved the code after id init
-    for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
-	int rem= nthreads-nid;
-	int size= std::min(rem, delta_socket);
-	pp_tree_init(&pp_tree[nid],size,nid);
-    } 
-    #endif
-    for( i=0; i < nthreads; ++i ) {
-	//id[i] =i;
-	//pp_exec_c[i].xid=false;
-	id[i] =(nthreads-1)-i; //mirroring ids
-	pp_exec_c[i].xid=0;
-    }
-    for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
-    // for (j=0,  nid=nthreads-1; j<num_socket; nid-=delta_socket, j++){
-	int rem= nthreads-nid;
-	// int rem= nid+1;
-	int size= std::min(rem, delta_socket);
-	pp_tree_init(&pp_tree[nid],size,id[nid]);
-    }
     int c;
-    /*for(c=0; c < nthreads; c++){
-      printf("\nthread indx: %d, thread id: %d, num_children=%d\n", c, id[c], pp_tree[c].num_children ); 
-      for(j=0; j< pp_tree[c].num_children; j++)
-        printf("child[%d] indx: %d, id: %d\n", j, pp_tree[c].child[j], id[pp_tree[c].child[j]]);
-    }*/
     __init_parallel = true;
-    is_up = true;
-    // _Cilk_spawn noop();
-    // __cilkrts_worker *w= __cilkrts_get_tls_worker();
-    //CILK_ASSERT(w->g->workers[0]->l->signal_node);
-    // signal_node_msg(w->g->workers[0]->l->signal_node, 1); //exclusively signal worker 0 
-    // notify_children_run(w);
-     //notify_children_run(w->g->workers[0]);
-    printf( "runtime up...\n" );
 }
 
 } // extern "C"
@@ -785,39 +638,8 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	 s.capture.delta64 = (cilk64_t)((count+num_threads-1)/num_threads);
      }
 
-#if 0
-     // This data is per-thread and may remain shared
-     if( s.capture.is32f ) {
-	 count_t delta = (count+num_threads-1)/num_threads;
-	 for (int i=0; i<num_threads; i++){
-	     params[i].low32 = std::min((delta)*i,count);
-	     params[i].high32 = std::min(delta*(i+1),count);
-	 }
-     } else {
-	 count_t delta = (count+num_threads-1)/num_threads;
-	 for (int i=0; i<num_threads; i++){
-	     params[i].low64 = std::min((delta)*i,count);
-	     params[i].high64 = std::min(delta*(i+1),count);
-	 }
-     }
-#endif
-
      // store fence if not TSO/x86-64
    
-#if 0
-     // first distribute across socket
-   for (j=1,  nid=nthreads-delta_socket-1; j<num_socket; nid-=delta_socket, j++){
-       // TRACER_RECORD1(w,"submit-numa",nid);
-       pp_exec_submit( nid );
-   } 
-    /* now distribute within socket in a tree-like manner */
-    num_children = pp_tree[MASTER].num_children;
-    for(int i=0; i<num_children; i++){
-	// TRACER_RECORD1(w,"submit-mchild",pp_tree[MASTER].child[i]);
-	pp_exec_submit( pp_tree[MASTER].child[i] );
-    }
-#endif
-
     int log_threads;
 
     if( w->l->type == WORKER_USER ) {
