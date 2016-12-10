@@ -119,25 +119,16 @@ typedef struct pp_exec_count pp_exec_count;
 
 static pp_exec_count *pp_exec_c;
 static int nthreads;
-static int num_socket;
-static int delta_socket;
-static int cores_per_socket;
-// static struct capture_data capture;
+static bool __init_parallel=false;
 
 #define WITH_REDUCERS 1
 #if WITH_REDUCERS
 #define CACHE_BLOCK_SIZE 64
-// static __cilkrts_hyperobject_base *hypermap_reducer;
-// static char *hypermap_views;
 static __thread void *hypermap_local_view;
 
 // Round-up view size to multiple of cache block size
 #define HYPERMAP_VIEW_SIZE(r)  (((r)->__view_size + CACHE_BLOCK_SIZE-1) & ~(size_t)(CACHE_BLOCK_SIZE-1))
 #define HYPERMAP_GET(r,buf,slot) (&(buf)[(slot)*HYPERMAP_VIEW_SIZE((r))])
-
-//#define HYPERMAP_GET_WORKER(views,tid) 
-//#define HYPERMAP_GET_MASTER(r) (void*)(((char*)(r))+(r)->__view_offset)
-//#define HYPERMAP_GET(r,views,tid) (tid==MASTER?HYPERMAP_GET_MASTER((r)):HYPERMAP_GET_WORKER(views,tid))
 #endif
 
 /*
@@ -212,12 +203,6 @@ static void notify_children(__cilkrts_worker *w, unsigned int msg)
 static void notify_children_run(__cilkrts_worker *w)
 {
     notify_children(w, 1);
-}
-static bool __init_parallel=false;
-static void asm_pause()
-{
-    // should help hyperthreads
-    // __asm__ __volatile__( "pause" : : : );
 }
 
 static void
@@ -405,99 +390,6 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
     }
 }
 
-#if 0
-void
-static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
-{
-    int idx= (nthreads-1)-tid;
-    pp_exec_t *x = &pp_exec[idx];
-    pp_exec_count *c = &pp_exec_c[idx];
-    struct tree_struct *p_tree= &pp_tree[idx];
-    struct param *p= &params[idx];
-    /*pp_exec_t *x = &pp_exec[tid];
-    pp_exec_count *c = &pp_exec_c[tid];
-    struct tree_struct *p_tree= &pp_tree[tid];
-    struct param *p= &params[tid];*/
-    int num_children;
-    int j,k;
-
-    if( ! __init_parallel ) {
-	TRACER_RECORD0(w,"static-not-init");
-        return;
-    }
-
-    num_children = p_tree->num_children;
-    while( 1 ) {
-	/* Busy wait loop for fast response */
-        while( *((volatile void**)&c->xid) == false) {
-	    // We are polling Cilk's thread signal node. If it says wait,
-	    // we run, if it says continue, we stop.
-	    // User workers do not have signal nodes
-	    if( !dyn_snode || !signal_node_should_wait( dyn_snode ) ) {
-		// printf( "static sched tid=%d leaving\n", tid );
-		// TRACER_RECORD0(w,"leave-static-scheduler");
-		return;
-	    }
-	    sched_yield();
-	    asm_pause();
-	    // Record a steal failure and return to dynamic scheduler
-            // w->l->steal_failure_count++;
-	}
-      /*  for(k=0; k< num_children; k++)
-            printf("thread : %d , child[%d]: %d \n", tid, k, p_tree->child[k]);	*/
-	// Signal other threads to get going
-	for(j=0; j<num_children; j++) {
-	    TRACER_RECORD1(w,"submit-child",p_tree->child[j]);
-	    pp_exec_submit( p_tree->child[j] );
-        }
-
-#if WITH_REDUCERS
-	// If we have reducers in this loop, initialize them here
-       if( hypermap_reducer ) {
-           // hypermap_local_view = HYPERMAP_GET(hypermap_reducer,hypermap_views,tid);
-           // (*hypermap_reducer->__c_monoid.identity_fn)(
-               // (void*)&hypermap_reducer->__c_monoid, HYPERMAP_GET(hypermap_reducer,hypermap_views,tid) );
-       }
-#endif
-
-       // Execute loop body
-       TRACER_RECORD0(w,"static-work");
-       if( capture.is32f ) {
-           __cilk_abi_f32_t body32
-               = reinterpret_cast<__cilk_abi_f32_t>(capture.body);
-           (*body32)( capture.data, p->low32, p->high32 );
-       } else {
-           __cilk_abi_f64_t body64
-               = reinterpret_cast<__cilk_abi_f64_t>(capture.body);
-           (*body64)( capture.data, p->low64, p->high64 );
-       }
-       // Wait for other threads to complete
-       for(j=0; j<num_children; j++) {
-           pp_exec_wait(p_tree->child[j]);
-	   TRACER_RECORD1(w,"wait-child",p_tree->child[j]);
-#if WITH_REDUCERS
-	   if( hypermap_reducer ) {
-	       // Reduce results from other thread
-	       (*hypermap_reducer->__c_monoid.reduce_fn)(
-		   (void*)&hypermap_reducer->__c_monoid,
-		   HYPERMAP_GET(hypermap_reducer,hypermap_views,tid), HYPERMAP_GET(hypermap_reducer,hypermap_views,p_tree->child[j]) );
-	       // Destroy other thread's view
-	       (*hypermap_reducer->__c_monoid.destroy_fn)(
-		   (void*)&hypermap_reducer->__c_monoid,
-		   HYPERMAP_GET(hypermap_reducer,hypermap_views,p_tree->child[j]) );
-	   }
-#endif
-       }
-#if WITH_REDUCERS
-       hypermap_local_view = 0; // erase
-#endif
-       /* Signal we're done */
-       c->xid= false;
-       TRACER_RECORD0(w,"static-work-done");
-    } //end if while
-}
-#endif
-
 void __parallel_initialize(void) {
     pthread_t tid;
     int i,j, nid, ret;
@@ -515,27 +407,6 @@ void __parallel_initialize(void) {
 	nthreads=1;
     }
 
-    if(const char* env_n = getenv("MACHINE")){
-	num_socket= atoi(env_n);
-	if(strcmp(env_n,"jacob")==0){
-	    cores_per_socket=12; 
-	}
-	else if(strcmp(env_n,"hvan03")==0){
-	    cores_per_socket=8;
-	}
-	else if(strcmp(env_n,"hpdc")==0){
-	    cores_per_socket=8;
-	}
-	else if(strcmp(env_n,"bouillon")==0){
-	    cores_per_socket=256;
-	}
-    }else{
-	cores_per_socket=8; //assume hpdc 
-    }
-    /*calculate over how many sockets the threds will be spread, and how many threads/socket*/
-    num_socket= (nthreads+cores_per_socket-1)/cores_per_socket;  //assumption: correct number of threads given
-    delta_socket= (nthreads + num_socket-1)/ num_socket;
-    /*allocate memory for data structures*/
     pp_exec_c = new pp_exec_count[nthreads];
     int c;
     __init_parallel = true;
