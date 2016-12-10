@@ -93,8 +93,6 @@ extern "C" {
 #   define CILKRTS_OPTIMIZED 0
 # endif
 #endif
-extern int cilk_rt_up;
-typedef unsigned pp_exec_id_t;
 struct capture_data {
     void *body;
     void *data;

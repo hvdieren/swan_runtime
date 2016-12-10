@@ -98,7 +98,6 @@ void * _ReturnAddress(void);
 #include "reducer_impl.h"
 #include "cilk-ittnotify.h"
 #include "cilk-tbb-interop.h"
-int cilk_rt_up=0;
 #define TBB_INTEROP_DATA_DELAYED_UNTIL_BIND (void *)-1
 
 /**
@@ -565,7 +564,6 @@ CILK_ABI_WORKER_PTR BIND_THREAD_RTN(void)
 
     /* 1: Initialize and start the Cilk runtime */
     __cilkrts_init_internal(1);
-    cilk_rt_up=1;
     /*
      * 2: Choose a worker for this thread (fail if none left).  The table of
      *    user workers is protected by the global OS mutex lock.
