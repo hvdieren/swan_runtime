@@ -101,6 +101,8 @@ struct capture_data {
     cilk32_t delta32;
     cilk64_t count64;
     cilk64_t delta64;
+    __cilkrts_hyperobject_base *hypermap;
+    char *views;
     bool is32f;
 };
 
@@ -125,16 +127,17 @@ static int cores_per_socket;
 #define WITH_REDUCERS 1
 #if WITH_REDUCERS
 #define CACHE_BLOCK_SIZE 64
-static __cilkrts_hyperobject_base *hypermap_reducer;
-static char *hypermap_views;
+// static __cilkrts_hyperobject_base *hypermap_reducer;
+// static char *hypermap_views;
 static __thread void *hypermap_local_view;
 
 // Round-up view size to multiple of cache block size
-#define HYPERMAP_VIEW_SIZE  (hypermap_reducer->__view_size + ((hypermap_reducer->__view_size + CACHE_BLOCK_SIZE-1) & (CACHE_BLOCK_SIZE-1)))
-#define HYPERMAP_SIZE  (HYPERMAP_VIEW_SIZE * nthreads)
-#define HYPERMAP_GET_WORKER(tid) (&hypermap_views[(tid)*HYPERMAP_VIEW_SIZE])
-#define HYPERMAP_GET_MASTER (void*)(((char*)hypermap_reducer)+hypermap_reducer->__view_offset)
-#define HYPERMAP_GET(tid) (tid==MASTER?HYPERMAP_GET_MASTER:HYPERMAP_GET_WORKER(tid))
+#define HYPERMAP_VIEW_SIZE(r)  (((r)->__view_size + CACHE_BLOCK_SIZE-1) & ~(size_t)(CACHE_BLOCK_SIZE-1))
+#define HYPERMAP_GET(r,buf,slot) (&(buf)[(slot)*HYPERMAP_VIEW_SIZE((r))])
+
+//#define HYPERMAP_GET_WORKER(views,tid) 
+//#define HYPERMAP_GET_MASTER(r) (void*)(((char*)(r))+(r)->__view_offset)
+//#define HYPERMAP_GET(r,views,tid) (tid==MASTER?HYPERMAP_GET_MASTER((r)):HYPERMAP_GET_WORKER(views,tid))
 #endif
 
 /*
@@ -242,6 +245,48 @@ static_execute_capture( struct capture_data * c, int my_idx, int my_slot ) {
     }
 }
 
+#if WITH_REDUCERS
+static void
+reducer_initialize_view( __cilkrts_hyperobject_base *hypermap_reducer,
+			 char *views, int slot ) {
+    // If we have reducers in this loop, initialize them here
+    if( hypermap_reducer ) {
+	// Initialize view
+	char *view = HYPERMAP_GET(hypermap_reducer,views,slot);
+	(*hypermap_reducer->__c_monoid.identity_fn)(
+	    (void*)&hypermap_reducer->__c_monoid, view );
+	// Initialize thread-local varibale
+	hypermap_local_view = view;
+    }
+}
+
+static void
+reduce_and_destroy_view( __cilkrts_hyperobject_base *hypermap_reducer,
+			 void *left, void *right ) {
+    if( hypermap_reducer ) {
+	// Reduce results from other thread
+	(*hypermap_reducer->__c_monoid.reduce_fn)(
+	    (void*)&hypermap_reducer->__c_monoid, left, right );
+	// Destroy other thread's view
+	(*hypermap_reducer->__c_monoid.destroy_fn)(
+	    (void*)&hypermap_reducer->__c_monoid, right );
+    }
+}
+
+static void
+reduce_and_destroy( __cilkrts_hyperobject_base *hypermap_reducer,
+		    char *views, int left_slot, int right_slot ) {
+    if( hypermap_reducer ) {
+	reduce_and_destroy_view(
+	    hypermap_reducer,
+	    HYPERMAP_GET( hypermap_reducer, views, left_slot ),
+	    HYPERMAP_GET( hypermap_reducer, views, right_slot ) );
+    }
+}
+
+#endif // WITH_REDUCERS
+
+
 static bool
 static_numa_scheduler_once( __cilkrts_worker *w ) {
     assert( w->l->type == WORKER_SYSTEM );
@@ -296,11 +341,19 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 	}
     }
 
+#if WITH_REDUCERS
+    reducer_initialize_view( s->capture.hypermap, s->capture.views, my_slot );
+#endif
+
     // Execute loop body
     TRACER_RECORD0(w,"static-work");
     printf( "Worker %d (%d) read state %p numa=%d\n", my_idx, my_slot, s, numa_node );
     static_execute_capture( &s->capture, my_idx, my_slot );
     
+#if WITH_REDUCERS
+    hypermap_local_view = 0;
+#endif
+
     // Wait for completion of other threads
     for( int p=log_threads; p > 0; --p ) {
 	int mask = (1<<p)-1;
@@ -314,6 +367,10 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 		while( *((volatile void**)&c->xid) != 0 ) {
 		    __cilkrts_yield();
 		}
+#if WITH_REDUCERS
+		reduce_and_destroy( s->capture.hypermap, s->capture.views,
+				    my_slot, slot );
+#endif
 		printf( "Worker %d (%d) received completion from %d (%d)\n",
 			my_idx, my_slot, dst_idx, slot );
 	    }
@@ -397,9 +454,9 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 #if WITH_REDUCERS
 	// If we have reducers in this loop, initialize them here
        if( hypermap_reducer ) {
-           hypermap_local_view = HYPERMAP_GET(tid);
-           (*hypermap_reducer->__c_monoid.identity_fn)(
-               (void*)&hypermap_reducer->__c_monoid, HYPERMAP_GET(tid) );
+           // hypermap_local_view = HYPERMAP_GET(hypermap_reducer,hypermap_views,tid);
+           // (*hypermap_reducer->__c_monoid.identity_fn)(
+               // (void*)&hypermap_reducer->__c_monoid, HYPERMAP_GET(hypermap_reducer,hypermap_views,tid) );
        }
 #endif
 
@@ -423,11 +480,11 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 	       // Reduce results from other thread
 	       (*hypermap_reducer->__c_monoid.reduce_fn)(
 		   (void*)&hypermap_reducer->__c_monoid,
-		   HYPERMAP_GET(tid), HYPERMAP_GET(p_tree->child[j]) );
+		   HYPERMAP_GET(hypermap_reducer,hypermap_views,tid), HYPERMAP_GET(hypermap_reducer,hypermap_views,p_tree->child[j]) );
 	       // Destroy other thread's view
 	       (*hypermap_reducer->__c_monoid.destroy_fn)(
 		   (void*)&hypermap_reducer->__c_monoid,
-		   HYPERMAP_GET(p_tree->child[j]) );
+		   HYPERMAP_GET(hypermap_reducer,hypermap_views,p_tree->child[j]) );
 	   }
 #endif
        }
@@ -601,24 +658,33 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     notify_children_run(w);
 
 #if WITH_REDUCERS
-     // could use class storage_for_object<> from cilk headers
-     hypermap_reducer = hypermap;
-     char hypermap_buffer[hypermap ? HYPERMAP_SIZE+CACHE_BLOCK_SIZE:1];
+    // Allocate space for reducer views. Allocate one view for every
+    // system worker. This is the maximum required // for any invocation.
+    // If there is a user worker involved, it will be the master and use the
+    // original view. The array is indexed using global indices, like the
+    // synchronisation array (pp_exec_c).
+    // Could use class storage_for_object<> from cilk headers
+    size_t view_size = HYPERMAP_VIEW_SIZE(hypermap);
+    size_t hmap_size = w->g->system_workers * view_size;
+    char hypermap_buffer[hypermap ? hmap_size + CACHE_BLOCK_SIZE:1];
+    char *hypermap_views;
 
-     if( hypermap ) {
-        // Stack-allocate views.
-        uintptr_t offset = uintptr_t(&hypermap_buffer[0])
-            & uintptr_t(CACHE_BLOCK_SIZE-1);
-        // printf( "view size: %ld * %d = %ld\n",
-        //         HYPERMAP_VIEW_SIZE, num_threads, HYPERMAP_SIZE );
-        hypermap_views = &hypermap_buffer[CACHE_BLOCK_SIZE-offset];
-        assert( (uintptr_t(hypermap_views) & uintptr_t(CACHE_BLOCK_SIZE-1)) == 0 );
-     } else {
-        hypermap_views = NULL;
-     }
+    if( hypermap ) {
+	// Stack-allocate views.
+	uintptr_t offset = uintptr_t(&hypermap_buffer[0])
+	    & uintptr_t(CACHE_BLOCK_SIZE-1);
+	// printf( "view size: %ld * %d = %ld\n",
+	//         HYPERMAP_VIEW_SIZE, num_threads, HYPERMAP_SIZE );
+	hypermap_views = &hypermap_buffer[CACHE_BLOCK_SIZE-offset];
+	assert( (uintptr_t(hypermap_views) & uintptr_t(CACHE_BLOCK_SIZE-1)) == 0 );
+    } else {
+	hypermap_views = NULL;
+    }
 
-     // Initialize pointer to our local view
-     hypermap_local_view = hypermap_reducer ? HYPERMAP_GET(MASTER) : 0;
+    // Initialize pointer to our local view
+    hypermap_local_view = hypermap
+	? (void *)(((char*)(hypermap))+(hypermap)->__view_offset)
+	: (void *)0;
 #endif
 
      // If we have multiple per-NUMA schedulers, then we also need the
@@ -627,6 +693,10 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
      s.capture.body = reinterpret_cast<void *>(body);
      s.capture.data = data;
      s.capture.is32f = is_32f<F>::value;
+#if WITH_REDUCERS
+     s.capture.hypermap = hypermap;
+     s.capture.views = hypermap_views;
+#endif
 
      if( s.capture.is32f ) {
 	 s.capture.count32 = (cilk32_t)count;
@@ -689,29 +759,24 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     if( w->l->type == WORKER_USER ) {
 	for( int i=0; i < num_numa_nodes; ++i ) {
 	    // Slot for first thread on NUMA node
-	    pp_exec_count *c
-		= &pp_exec_c[w->g->numa_node_cum_threads[numa_nodes[i]]];
-
-	    /* Busy wait loop for fast response */
-	    while( *((volatile void**)&c->xid) != 0 ) {
-		__cilkrts_yield();
-	    }
-	    printf( "thread local 0 on node %d completed\n", numa_nodes[i] );
-	}
-    } else {
-	// Re-wired
-	int my_idx = w->l->numa_local_self;
-	if( my_idx != 0 ) {
-	    int slot = w->g->numa_node_cum_threads[master_numa_node] + 0;
+	    int slot = w->g->numa_node_cum_threads[numa_nodes[i]];
 	    pp_exec_count *c = &pp_exec_c[slot];
 
 	    /* Busy wait loop for fast response */
 	    while( *((volatile void**)&c->xid) != 0 ) {
 		__cilkrts_yield();
 	    }
-	    printf( "Worker %d (%d) received completion from %d (%d)\n",
-		    my_idx, -1, 0, slot );
+#if WITH_REDUCERS
+	    reduce_and_destroy_view(
+		hypermap, hypermap_local_view,
+		HYPERMAP_GET(hypermap, hypermap_views, slot) );
+#endif
+	    printf( "thread local 0 on node %d completed\n", numa_nodes[i] );
 	}
+    } else {
+	// Re-wired
+	int my_idx = w->l->numa_local_self;
+	// TODO: Reverse order of loop to get non-commutative reductions right
 	for( int p=log_threads; p > 0; --p ) {
 	    int mask = (1<<p)-1;
 	    if( (my_idx & mask) == 0 ) {
@@ -724,63 +789,44 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		    while( *((volatile void**)&c->xid) != 0 ) {
 			__cilkrts_yield();
 		    }
+#if WITH_REDUCERS
+		    reduce_and_destroy_view(
+			hypermap, hypermap_local_view,
+			HYPERMAP_GET(hypermap, hypermap_views, slot) );
+#endif
 		    printf( "Worker %d (%d) received completion from %d (%d)\n",
 			    my_idx, -1, dst_idx, slot );
 		}
 	    }
 	}
+	if( my_idx != 0 ) {
+	    int slot = w->g->numa_node_cum_threads[master_numa_node] + 0;
+	    pp_exec_count *c = &pp_exec_c[slot];
+
+	    /* Busy wait loop for fast response */
+	    while( *((volatile void**)&c->xid) != 0 ) {
+		__cilkrts_yield();
+	    }
+#if WITH_REDUCERS
+	    // TODO: do this reduction the other way round - should use
+	    // different local view in case of re-wiring
+	    reduce_and_destroy_view(
+		hypermap, hypermap_local_view,
+		HYPERMAP_GET(hypermap, hypermap_views, slot) );
+#endif
+	    printf( "Worker %d (%d) received completion from %d (%d)\n",
+		    my_idx, -1, 0, slot );
+	}
     }
 
     // TODO: the way we reduce results supports non-commutative
-    //       reducers only if we get the tree right!
-    //printf("going into wait\n");
-#if 0
-    /* wait on child nodes to finish work*/
-   /* for(int l=0; l<num_children; l++){
-       printf("thread master, child[%d]: %d\n", l, pp_tree[MASTER].child[l]);
-    }*/
-    for(int i=0; i<num_children; i++) {
-        pp_exec_wait(pp_tree[MASTER].child[i]);
-	// TRACER_RECORD1(w,"wait-mchild",pp_tree[MASTER].child[i]);
-#if WITH_REDUCERS
-       if( hypermap_reducer ) {
-          // Reduce results from other thread
-          (*hypermap_reducer->__c_monoid.reduce_fn)(
-              (void*)&hypermap_reducer->__c_monoid,
-              HYPERMAP_GET(MASTER), HYPERMAP_GET(pp_tree[MASTER].child[i]) );
-          // Destroy other thread's view
-          (*hypermap_reducer->__c_monoid.destroy_fn)(
-              (void*)&hypermap_reducer->__c_monoid,
-              HYPERMAP_GET(pp_tree[MASTER].child[i]) );
-       }
-#endif
-    }
-    for (j=1,  nid=nthreads-delta_socket-1; j<num_socket; nid-=delta_socket, j++){
-	// Wait on tree roots on other sockets
-	pp_exec_wait( nid );
-	// TRACER_RECORD1(w,"wait-numa",nid);
-#if WITH_REDUCERS
-       if( hypermap_reducer ) {
-          // Reduce results from other thread
-          (*hypermap_reducer->__c_monoid.reduce_fn)(
-              (void*)&hypermap_reducer->__c_monoid,
-              HYPERMAP_GET(MASTER), HYPERMAP_GET(nid) );
-          // Destroy other thread's view
-          (*hypermap_reducer->__c_monoid.destroy_fn)(
-              (void*)&hypermap_reducer->__c_monoid, HYPERMAP_GET(nid) );
-       }
-#endif
-    }
+    //       reducers only in specific circumstances.
 #if WITH_REDUCERS
     // The master always uses the leftmost view.
     // The master has thus applied all updates to the final view.
     // Unset variables
-    hypermap_reducer = 0;
-    hypermap_views = 0;
     hypermap_local_view = 0;
 #endif
-
-#endif // 0
 
     // TRACER_RECORD0(w,"leave-static-for-root");
     // printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
