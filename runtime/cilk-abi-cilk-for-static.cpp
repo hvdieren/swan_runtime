@@ -106,6 +106,11 @@ struct pp_exec_t {
 struct capture_data {
     void *body;
     void *data;
+    int rewire;
+    cilk32_t count32;
+    cilk32_t delta32;
+    cilk64_t count64;
+    cilk64_t delta64;
     bool is32f;
 };
 
@@ -321,6 +326,31 @@ static void pp_exec_wait( int id )
 }
 #endif
 
+static void
+static_execute_capture( struct capture_data * c, int my_idx, int my_slot ) {
+    if( c->is32f ) {
+	__cilk_abi_f32_t body32
+	    = reinterpret_cast<__cilk_abi_f32_t>(c->body);
+	cilk32_t idx = my_idx;
+	cilk32_t count = c->count32;
+	cilk32_t delta = c->delta32;
+	cilk32_t low = std::min(delta*idx,count);
+	cilk32_t high = std::min(delta*(idx+1),count);
+	printf( "exec32 %d (%d) count=%d %d-%d\n", my_idx, my_slot, count, low, high );
+	(*body32)( c->data, low, high );
+    } else {
+	__cilk_abi_f64_t body64
+	    = reinterpret_cast<__cilk_abi_f64_t>(c->body);
+	cilk64_t idx = my_idx;
+	cilk64_t count = c->count64;
+	cilk64_t delta = c->delta64;
+	cilk64_t low = std::min(delta*idx,count);
+	cilk64_t high = std::min(delta*(idx+1),count);
+	printf( "exec64 %d (%d) count=%ld %ld-%ld\n", my_idx, my_slot, count, low, high );
+	(*body64)( c->data, low, high );
+    }
+}
+
 static bool
 static_numa_scheduler_once( __cilkrts_worker *w ) {
     assert( w->l->type == WORKER_SYSTEM );
@@ -340,8 +370,6 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
     int log_threads = 0;
     for( int n=num_threads-1; n != 0; n>>=1 ) { ++log_threads; }
 
-    printf( "log threads=%d from %d (node %d)\n", log_threads, num_threads, numa_node );
-
     // Now we have a fork barrier between num_threads threads.
     // The lowest-numbered thread listens to the overall (inter-numa) master.
     // In the case of a user worker, that is the master.
@@ -351,8 +379,11 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 	pp_exec_count *c = &pp_exec_c[my_slot];
 
 	/* Busy wait loop for fast response */
+	int counter = 300000;
         while( *((volatile void**)&c->xid) == 0) {
 	    __cilkrts_yield();
+	    if( --counter == 0 )
+		return false; // bail out
 	}
 	printf( "Worker %d (%d) received ok to run\n", my_idx, my_slot );
     }
@@ -365,7 +396,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 	if( (my_idx & mask) == 0 ) {
 	    // Signal other thread
 	    int dst_idx = my_idx | (1<<(p-1));
-	    if( dst_idx < num_threads ) {
+	    if( dst_idx < num_threads && dst_idx != s->capture.rewire ) {
 		int slot = w->g->numa_node_cum_threads[numa_node] + dst_idx;
 		pp_exec_count *c = &pp_exec_c[slot];
 		c->xid = s;
@@ -377,23 +408,15 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
     // Execute loop body
     TRACER_RECORD0(w,"static-work");
     printf( "Worker %d (%d) read state %p numa=%d\n", my_idx, my_slot, s, numa_node );
-    struct param *p= &params[my_slot]; // TODO: get offset through numa_state
-    if( s->capture.is32f ) {
-	__cilk_abi_f32_t body32
-	    = reinterpret_cast<__cilk_abi_f32_t>(s->capture.body);
-	(*body32)( s->capture.data, p->low32, p->high32 );
-    } else {
-	__cilk_abi_f64_t body64
-	    = reinterpret_cast<__cilk_abi_f64_t>(s->capture.body);
-	(*body64)( s->capture.data, p->low64, p->high64 );
-    }
+    // struct param *p= &params[my_slot];
+    static_execute_capture( &s->capture, my_idx, my_slot );
     
     // Wait for completion of other threads
     for( int p=log_threads; p > 0; --p ) {
 	int mask = (1<<p)-1;
 	if( (my_idx & mask) == 0 ) {
 	    int dst_idx = my_idx | (1<<(p-1));
-	    if( dst_idx < num_threads ) {
+	    if( dst_idx < num_threads && dst_idx != s->capture.rewire ) {
 		int slot = w->g->numa_node_cum_threads[numa_node] + dst_idx;
 		pp_exec_count *c = &pp_exec_c[slot];
 
@@ -420,18 +443,6 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 void
 static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 {
-    int idx= (nthreads-1)-tid;
-    pp_exec_t *x = &pp_exec[idx];
-    pp_exec_count *c = &pp_exec_c[idx];
-    struct tree_struct *p_tree= &pp_tree[idx];
-    struct param *p= &params[idx];
-    /*pp_exec_t *x = &pp_exec[tid];
-    pp_exec_count *c = &pp_exec_c[tid];
-    struct tree_struct *p_tree= &pp_tree[tid];
-    struct param *p= &params[tid];*/
-    int num_children;
-    int j,k;
-
     if( ! __init_parallel ) {
 	TRACER_RECORD0(w,"static-not-init");
         return;
@@ -439,7 +450,8 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 
     if( w->l->type == WORKER_SYSTEM ) {
 	while( 1 ) {
-	    static_numa_scheduler_once( w );
+	    if( !static_numa_scheduler_once( w ) )
+		return;
 	    if( !dyn_snode || !signal_node_should_wait( dyn_snode ) )
 		return;
 	}
@@ -683,14 +695,10 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	__cilkrts_yield();
     }
 
-    // TODO: temporary for KNL as it does not have CPUs on node 1!
-    // w->g->numa_nodes = 1;
-
     // Check if we are called with NUMA restrictions in the stack frame.
     // If so, we should only use the workers on our own NUMA node. Else,
     // we can use all workers.
     bool system_wide = ( sf.flags & CILK_FRAME_NUMA ) ? false : true;
-    printf( "Cilk-static: system_wide=%d\n", (int)system_wide );
 
     // Determine our own NUMA node
     int master_numa_node;
@@ -702,6 +710,8 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	else
 	    master_numa_node = 0; // always works?
     }
+
+    printf( "Cilk-static: system_wide=%d self=%d numa=%d\n", (int)system_wide, w->self, master_numa_node );
     
     // Allocate workers (by NUMA node)
     int numa_nodes[w->g->numa_nodes];
@@ -719,6 +729,10 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	    }
 	}
     } else {
+	// TODO: master may be on 'wrong' NUMA node. Therefore, consider
+	//       to first try to allocate on a NUMA node as described in
+	//       the NUMA mask of the stack frame. If that fails, take the
+	//       master's NUMA node.
 	if( w->g->numa_allocate[master_numa_node] == 0 ) {
 	    if( __sync_bool_compare_and_swap(
 		    &w->g->numa_allocate[master_numa_node], 0, 1 ) ) {
@@ -727,16 +741,14 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	    }
 	}
     }
-    printf( "Cilk-static: allocated %d NUMA nodes, using %d threads\n",
-	    num_numa_nodes, num_threads );
+    printf( "Cilk-static: allocated %d NUMA nodes, using %d threads type %d\n",
+	    num_numa_nodes, num_threads, w->l->type );
 
-    // Ensure all workers are awake. They should now be able to observe
+    // Ensure (all) workers are awake. They should now be able to observe
     // that their NUMA node has been allocated and remain in the static
     // scheduler until this loop is done.
     notify_children_run(w);
 
-    
-    // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
 #if WITH_REDUCERS
      // could use class storage_for_object<> from cilk headers
      hypermap_reducer = hypermap;
@@ -765,6 +777,15 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
      s.capture.data = data;
      s.capture.is32f = is_32f<F>::value;
 
+     if( s.capture.is32f ) {
+	 s.capture.count32 = (cilk32_t)count;
+	 s.capture.delta32 = (cilk32_t)((count+num_threads-1)/num_threads);
+     } else {
+	 s.capture.count64 = (cilk64_t)count;
+	 s.capture.delta64 = (cilk64_t)((count+num_threads-1)/num_threads);
+     }
+
+#if 0
      // This data is per-thread and may remain shared
      if( s.capture.is32f ) {
 	 count_t delta = (count+num_threads-1)/num_threads;
@@ -779,6 +800,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	     params[i].high64 = std::min(delta*(i+1),count);
 	 }
      }
+#endif
 
      // store fence if not TSO/x86-64
    
@@ -796,31 +818,97 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     }
 #endif
 
-    // Distribute work across sockets
-    for( int i=0; i < num_numa_nodes; ++i ) {
-	// Slot for first thread on NUMA node
-	pp_exec_count *c
-	    = &pp_exec_c[w->g->numa_node_cum_threads[numa_nodes[i]]];
-	c->xid = &s;
+    int log_threads;
+
+    if( w->l->type == WORKER_USER ) {
+	// No re-wiring required
+	s.capture.rewire = -1;
+	// Distribute work across sockets
+	for( int i=0; i < num_numa_nodes; ++i ) {
+	    // Slot for first thread on NUMA node
+	    pp_exec_count *c
+		= &pp_exec_c[w->g->numa_node_cum_threads[numa_nodes[i]]];
+	    c->xid = &s;
+	}
+    } else {
+	// Distribute work intra-socket
+	log_threads = 0;
+	for( int n=num_threads-1; n != 0; n>>=1 ) { ++log_threads; }
+
+	int my_idx = w->l->numa_local_self;
+	s.capture.rewire = my_idx;
+
+	if( my_idx != 0 ) {
+	    int slot = w->g->numa_node_cum_threads[master_numa_node] + 0;
+	    pp_exec_count *c = &pp_exec_c[slot];
+	    c->xid = &s;
+	    printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, -1, 0, slot );
+	}
+	
+	for( int p=log_threads; p > 0; --p ) {
+	    int mask = (1<<p)-1;
+	    if( (my_idx & mask) == 0 ) {
+		// Signal other thread
+		int dst_idx = my_idx | (1<<(p-1));
+		if( dst_idx < num_threads ) {
+		    int slot = w->g->numa_node_cum_threads[master_numa_node] + dst_idx;
+		    pp_exec_count *c = &pp_exec_c[slot];
+		    c->xid = &s;
+		    printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, -1, dst_idx, slot );
+		}
+	    }
+	}
     }
 
     /* now go on and do the work */
-    if( s.capture.is32f )
-       (*body)( s.capture.data, params[MASTER].low32, params[MASTER].high32 );
-    else
-       (*body)( s.capture.data, params[MASTER].low64, params[MASTER].high64 );
+    static_execute_capture( &s.capture,
+			    w->l->type == WORKER_USER ? num_threads-1
+			    : w->l->numa_local_self, -1 );
 
     // Wait for other threads to complete
-    for( int i=0; i < num_numa_nodes; ++i ) {
-	// Slot for first thread on NUMA node
-	pp_exec_count *c
-	    = &pp_exec_c[w->g->numa_node_cum_threads[numa_nodes[i]]];
+    if( w->l->type == WORKER_USER ) {
+	for( int i=0; i < num_numa_nodes; ++i ) {
+	    // Slot for first thread on NUMA node
+	    pp_exec_count *c
+		= &pp_exec_c[w->g->numa_node_cum_threads[numa_nodes[i]]];
 
-	/* Busy wait loop for fast response */
-        while( *((volatile void**)&c->xid) != 0 ) {
-	    __cilkrts_yield();
+	    /* Busy wait loop for fast response */
+	    while( *((volatile void**)&c->xid) != 0 ) {
+		__cilkrts_yield();
+	    }
+	    printf( "thread local 0 on node %d completed\n", numa_nodes[i] );
 	}
-	printf( "thread local 0 on node %d completed\n", numa_nodes[i] );
+    } else {
+	// Re-wired
+	int my_idx = w->l->numa_local_self;
+	if( my_idx != 0 ) {
+	    int slot = w->g->numa_node_cum_threads[master_numa_node] + 0;
+	    pp_exec_count *c = &pp_exec_c[slot];
+
+	    /* Busy wait loop for fast response */
+	    while( *((volatile void**)&c->xid) != 0 ) {
+		__cilkrts_yield();
+	    }
+	    printf( "Worker %d (%d) received completion from %d (%d)\n",
+		    my_idx, -1, 0, slot );
+	}
+	for( int p=log_threads; p > 0; --p ) {
+	    int mask = (1<<p)-1;
+	    if( (my_idx & mask) == 0 ) {
+		int dst_idx = my_idx | (1<<(p-1));
+		if( dst_idx < num_threads ) {
+		    int slot = w->g->numa_node_cum_threads[master_numa_node] + dst_idx;
+		    pp_exec_count *c = &pp_exec_c[slot];
+
+		    /* Busy wait loop for fast response */
+		    while( *((volatile void**)&c->xid) != 0 ) {
+			__cilkrts_yield();
+		    }
+		    printf( "Worker %d (%d) received completion from %d (%d)\n",
+			    my_idx, -1, dst_idx, slot );
+		}
+	    }
+	}
     }
 
     // TODO: the way we reduce results supports non-commutative
