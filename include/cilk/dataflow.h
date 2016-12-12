@@ -163,7 +163,7 @@ struct object_traits {
      */
     typedef Value value_type;
 
-    static constexpr /*__STDNS*/ size_t size = sizeof(value_type);
+    static const /*constexpr*/ /*__STDNS*/ size_t size = sizeof(value_type);
 
     static void initialize_wrapper( void *payload, void *v ) {
 	new (reinterpret_cast<value_type *>(v)) value_type();
@@ -188,7 +188,7 @@ struct object_traits {
      */
     typedef Value value_type;
 
-    static constexpr /*__STDNS*/ size_t size = sizeof(value_type);
+    static const /*constexpr*/ /*__STDNS*/ size_t size = sizeof(value_type);
 
     static void initialize_wrapper( void *payload, void *v ) {
 	new (reinterpret_cast<value_type *>(v)) value_type();
@@ -474,7 +474,7 @@ public:
     typedef object_instance<value_type> instance_type;
 
 private:
-    friend version_type;
+    friend class object_version<value_type>; // version_type;
 
 private:
     indep( version_type * v ) throw() : instance_type( v ) { }
@@ -508,7 +508,7 @@ public:
     typedef object_instance<value_type> instance_type;
 
 private:
-    friend version_type;
+    friend class object_version<value_type>; // version_type;
 
 private:
     outdep( version_type * _v ) throw() : instance_type( _v ) { }
@@ -542,7 +542,7 @@ public:
     typedef object_instance<value_type> instance_type;
 
 private:
-    friend version_type;
+    friend class object_version<value_type>; // version_type;
 
 private:
     inoutdep( version_type * v ) throw() : instance_type( v ) { }
