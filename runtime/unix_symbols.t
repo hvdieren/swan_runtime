@@ -72,6 +72,7 @@ __cilkrts_hyper_lookup
 __cilkrts_hyperobject_alloc
 __cilkrts_hyperobject_dealloc
 __cilkrts_hyperobject_noop_destroy
+__cilkrts_obj_metadata_add_pending_to_ready_list
 __cilkrts_init
 __cilkrts_irml_version
 __cilkrts_leave_frame

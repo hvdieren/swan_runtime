@@ -39,6 +39,7 @@ ___cilkrts_hyper_lookup
 ___cilkrts_hyperobject_alloc
 ___cilkrts_hyperobject_dealloc
 ___cilkrts_hyperobject_noop_destroy
+___cilkrts_obj_metadata_add_pending_to_ready_list
 ___cilkrts_init
 
 ___cilkrts_leave_frame
