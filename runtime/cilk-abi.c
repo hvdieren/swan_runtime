@@ -228,6 +228,8 @@ CILK_ABI_PENDING_PTR __cilkrts_pending_frame_create(size_t args_tags_size) {
 
     pf->args_tags = (void *)(((char *)pf)+pf_size);
 
+    pf->numa_low = pf->numa_high = 0; // NUMA-aware scheduling disabled
+
     /*    printf("     __cilkrts_pending_frame_create - pf %p at=%p\n", pf, pf->args_tags); */
 
     return pf;
@@ -927,6 +929,7 @@ __cilkrts_save_fp_ctrl_state(__cilkrts_stack_frame *sf)
 CILK_ABI(int32_t)
 __cilkrts_get_worker_numa(__cilkrts_worker *w)
 {
+#if 0
     // FIXME: numa_node_of_cpu() does I/O on /proc. Avoid repeated use of
     //        that by caching the information.
 #if defined(__APPLE__)
@@ -945,6 +948,9 @@ __cilkrts_get_worker_numa(__cilkrts_worker *w)
     }
     // printf( "NUMA? w=%d cpu=%d node=%d\n", w->self, cpu, node );
     return node;
+#endif
+#else
+    return w->l->numa_node; // Cached. Assume thread is pinned.
 #endif
 }
 

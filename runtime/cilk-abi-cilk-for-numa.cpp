@@ -54,9 +54,12 @@
  * from within the body of the cilk_for loop
  */
 
+#include "cilk/dataflow.h"
 #include "internal/abi.h"
+#include "internal/dataflow_abi.h"
 #include "metacall_impl.h"
 #include "global_state.h"
+#include "local_state.h"
 #include <stdio.h> // TODO: remove
 #include <assert.h> // TODO: remove
 
@@ -417,7 +420,7 @@ static void noop() { }
  * grain    - grain size (0 if it should be computed)
  */
 template <typename count_t, typename F>
-static void cilk_for_numa_root(F body, void *data, count_t count, int grain)
+static void cilk_for_numa_root_recursive(F body, void *data, count_t count, int grain)
 {
     // Cilkscreen should not report this call in a stack trace
     NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
@@ -466,6 +469,178 @@ static void cilk_for_numa_root(F body, void *data, count_t count, int grain)
     int gs = grainsize(grain, count);
     cilk_for_numa_recursive((count_t) 0, count, body, data,
 			    gs, w, &loop_root_pedigree);
+
+    // Need to refetch the worker after calling a spawning function.
+    w = sf->worker;
+
+    // Restore the pedigree in the worker.
+    w->pedigree = loop_root_pedigree;
+
+    // Bump the worker pedigree.
+    ++w->pedigree.rank;
+
+    // Implicit sync will increment the pedigree leaf rank again, for a total
+    // of two increments.  If the noop spawn above is removed, then we'll need
+    // to re-enable the following code:
+//     // If this is an optimized build, then the compiler will have optimized
+//     // out the increment of the worker's pedigree in the implied sync.  We
+//     // need to add one to make the pedigree_loop test work correctly.
+// #if CILKRTS_OPTIMIZED
+//     ++sf->worker->pedigree.rank;
+// #endif
+}
+
+template <typename count_t, typename F>
+struct __cilkrts_numa_args_tags {
+    struct {
+	count_t low;
+	count_t high;
+	F body;
+	void * data;
+	__cilkrts_pedigree *loop_root_pedigree;
+	int numa_node;
+    } args;
+    struct {
+	__cilkrts_task_list_node x;
+    } tags;
+};
+
+template <typename count_t, typename F>
+static void numa_call_fn( struct __cilkrts_stack_frame * sf ) {
+    struct __cilkrts_numa_args_tags<count_t,F> * at
+	= (struct __cilkrts_numa_args_tags<count_t,F> *)sf->args_tags;
+    __cilkrts_worker *w = __cilkrts_get_tls_worker();
+    // printf( "call_fn for worker %d iter %d on numa %d\n", w->self, at->args.low, w->l->numa_node );
+    assert( w->l->numa_node == at->args.low );
+    call_cilk_for_loop_body(at->args.low, at->args.high, at->args.body,
+			    at->args.data, w, at->args.loop_root_pedigree);
+    // Release is a no-op
+    // Re-read worker just in case the called function contained spawns
+    // w = __cilkrts_get_tls_worker();
+    if( sf->flags & CILK_FRAME_UNSYNCHED ) {
+	if( !CILK_SETJMP(sf->ctx) )
+	    __cilkrts_sync( sf );
+    }
+
+    __cilkrts_inline_pop_frame(sf);
+    if( sf->flags )
+	__cilkrts_leave_frame(sf);
+}
+
+template <typename count_t, typename F>
+static void cilk_for_numa_root(F body, void *data, count_t count, int grain)
+{
+    // Cilkscreen should not report this call in a stack trace
+    NOTIFY_ZC_INTRINSIC((char *)"cilkscreen_hide_call", 0);
+
+    // Pedigree computation:
+    //
+    //    If the last pedigree node on entry to the _Cilk_for has value X,
+    //    then at the start of each iteration of the loop body, the value of
+    //    the last pedigree node should be 0, the value of the second-to-last
+    //    node should equal the loop counter, and the value of the
+    //    third-to-last node should be X.  On return from the _Cilk_for, the
+    //    value of the last pedigree should be incremented to X+2. The
+    //    pedigree within the loop is thus flattened, such that the depth of
+    //    recursion does not affect the results either inside or outside of
+    //    the loop.  Note that the pedigree after the loop exists is the same
+    //    as if a single spawn and sync were executed within this function.
+
+    // TBD: Since the shrink-wrap optimization was turned on in the compiler,
+    // it is not possible to get the current stack frame without actually
+    // forcing a call to bind-thread.  This spurious spawn is a temporary
+    // stopgap until the correct intrinsics are added to give us total control
+    // over frame initialization.
+    _Cilk_spawn noop();
+
+    // Fetch the current worker.  From that we can get the current stack frame
+    // which will be constant even if we're stolen
+    __cilkrts_worker *w = __cilkrts_get_tls_worker();
+    __cilkrts_stack_frame *sf = w->current_stack_frame;
+
+    // printf( "for_root_numa worker %d\n", w->self );
+
+    // Decrement the rank by one to undo the pedigree change from the
+    // _Cilk_spawn
+    --w->pedigree.rank;
+
+    // Save the current worker pedigree into loop_root_pedigree, which will be
+    // the root node for our flattened pedigree.
+    __cilkrts_pedigree loop_root_pedigree = w->pedigree;
+
+    // Don't splice the loop_root node in yet.  It will be done when we
+    // call the loop body lambda function
+//    w->pedigree.rank = 0;
+//    w->pedigree.next = &loop_root_pedigree;
+
+    /* Spawn is necessary at top-level to force runtime to start up.
+     * TBD: Runtime must be started in order to call the grainsize() function.
+     */
+    int gs = grainsize(grain, count);
+/*
+    cilk_for_numa_recursive((count_t) 0, count, body, data,
+			    gs, w, &loop_root_pedigree);
+*/
+    // For each of node=0..count-1, issue a pending
+    // task on the appropriate NUMA domain, unless if it is ours, then we
+    // execute.
+    for( count_t node=0; node < count; ++node ) {
+	if( w->l->numa_node == (int)node ) { // our work
+	    // printf( "worker %d on numa %d performs iteration %d\n", 
+	    // w->self, w->l->numa_node, node );
+	    // Make current stack frame stealable
+	    // Error: node is given incorrect value. This appears to be an
+	    // error in the capture, which should be by value. Circumvent by
+	    // using the constant stored in w->l->numa_node.
+	    int n = w->l->numa_node;
+	    _Cilk_spawn cilk_for_numa_recursive(n, n+1, body, data,
+						1, w, &loop_root_pedigree);
+	    // Need to refetch the worker after calling a spawning function.
+	    w = sf->worker;
+	} else { // create pending frame
+	    // printf( "worker %d on numa %d makes iteration %d pending\n", 
+	    // w->self, w->l->numa_node, node );
+	    // Create pending frame and associated stack frame
+	    __cilkrts_pending_frame *pf
+		= __cilkrts_pending_frame_create(sizeof(__cilkrts_numa_args_tags<count_t,F>));
+
+	    // Initialize pending frame
+	    __cilkrts_numa_args_tags<count_t,F> * at =
+		(__cilkrts_numa_args_tags<count_t,F> *)pf->args_tags;
+	    at->args.low = node;
+	    at->args.high = node+1;
+	    at->args.body = body;
+	    at->args.data = data;
+	    at->args.loop_root_pedigree = &loop_root_pedigree;
+	    at->args.numa_node = node;
+
+	    // Set the team for the task
+	    pf->team = w->l->team;
+	    
+	    // set NUMA flags in stack frame associated to pending frame
+	    pf->numa_low = node;
+	    pf->numa_high = node+1;
+
+	    pf->call_fn = &numa_call_fn<count_t,F>;
+
+	    // Detach pending frame
+	    __cilkrts_detach_pending( pf );
+
+	    // Make pending frame ready to execute (issue)
+	    if( __sync_fetch_and_add( &pf->incoming_count, -1 ) == 1 )
+		// TODO: replace by worker on desired numa_node
+		// ? Create w->g->numa_ready_list[node]?
+		for( int i=0; i < w->g->system_workers; ++i ) {
+		    if( w->g->workers[i]->l->numa_node == node ) {
+			// printf( "publish iteration %d on worker %d with numa %d\n", node, i, w->g->workers[i]->l->numa_node );
+			__cilkrts_obj_metadata_add_pending_to_ready_list(
+			    w->g->workers[i], pf );
+			break;
+		    }
+		}
+	}
+    }
+    _Cilk_sync;
 
     // Need to refetch the worker after calling a spawning function.
     w = sf->worker;

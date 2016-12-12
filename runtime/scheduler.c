@@ -604,6 +604,9 @@ static int match_numa_pf(__cilkrts_worker *w, __cilkrts_pending_frame *pf) {
         return match_numa_range(w, pf->numa_low, pf->numa_high);
     else
     */
+    if( pf->numa_low != pf->numa_high )
+        return match_numa_range(w, pf->numa_low, pf->numa_high);
+    else
         return true;
 }
 
@@ -993,16 +996,16 @@ static void detach_for_steal(__cilkrts_worker *w,
     } END_WITH_FRAME_LOCK(w, parent_ff);
 }
 
-static void steal_from_ready_list(__cilkrts_worker *w,
-                                  __cilkrts_worker *victim,
-                                  cilk_fiber* fiber)
+static int steal_from_ready_list(__cilkrts_worker *w,
+                                 __cilkrts_worker *victim,
+                                 cilk_fiber* fiber)
 {
     /* ASSERT: we own victim->lock */
 
-    __cilkrts_pending_frame * ready_pf;
+    __cilkrts_pending_frame * ready_pf, * pf, * qf;
     full_frame *loot_ff, *parent_ff;
 
-    w->l->team = victim->l->team;
+    // w->l->team = victim->l->team;
 
     // printf( "%d: steal_from_ready_list victim=%d... team=%p\n", w->self, victim->self, w->l->team );
 
@@ -1010,10 +1013,28 @@ static void steal_from_ready_list(__cilkrts_worker *w,
 
     /* Pull a pending task from the victim's ready list */
     /* TODO: at the moment, stealing one task, do half of the ready list */
-    ready_pf = victim->ready_list.head_next_ready_frame;
-    victim->ready_list.head_next_ready_frame = ready_pf->next_ready_frame;
+    pf = victim->ready_list.head_next_ready_frame;
+    /* ASSERT: pf != NULL */
+    if( match_numa_pf( w, pf ) ) {
+        ready_pf = pf;
+        victim->ready_list.head_next_ready_frame = ready_pf->next_ready_frame;
+    } else {
+        qf = pf;
+        pf = pf->next_ready_frame;
+        while( pf && !match_numa_pf( w, pf ) ) {
+            qf = pf;        
+            pf = pf->next_ready_frame;
+        }
+        if( !pf )
+            return 0;
+
+        ready_pf = pf;
+        qf->next_ready_frame = ready_pf->next_ready_frame;
+    }
     if( NULL == victim->ready_list.head_next_ready_frame )
         victim->ready_list.tail = (__cilkrts_pending_frame *)&victim->ready_list.head_next_ready_frame;
+
+    w->l->team = ready_pf->team;
 
     // printf( "%d: steal_from_ready_list stolen=%p args_tags=%p args[0]=%p next on RL: %p...\n", w->self, ready_pf, ready_pf->args_tags, *(long **)ready_pf->args_tags, victim->ready_list.head_next_ready_frame );
 
@@ -1044,6 +1065,7 @@ static void steal_from_ready_list(__cilkrts_worker *w,
     /* TODO: Trick: pass pending_frame in to call_helper which frees it when done :)
      * But if you do that, you might as well make pending_fr as large as full_fr */
     // printf( "%d: steal_from_ready_list: %p sf=%p args_tags=%p args[0]=%p args[1]=%p @%p\n", w->self, loot_ff, loot_ff->call_stack, loot_ff->call_stack->args_tags, ((long **)loot_ff->call_stack->args_tags)[0], ((long **)loot_ff->call_stack->args_tags)[1], &((long **)loot_ff->call_stack->args_tags)[1] );
+    return 1;
 }
 
 /**
@@ -1164,6 +1186,102 @@ void fiber_proc_to_resume_user_code_for_pending_steal(cilk_fiber *fiber)
     CILK_ASSERT( !"Should not reach this - after initiating pending frame" );
 }
 
+static int own_ready_list_steal(__cilkrts_worker *w)
+{
+    cilk_fiber *fiber = NULL;
+    int n;
+    int success = 0;
+    int stolen_from_ready_list = 0;
+
+    // Nothing's been stolen yet. When true, this will flag
+    // setup_for_execution_pedigree to increment the pedigree
+    w->l->work_stolen = 0;
+
+    /* If the user has disabled stealing (using the debugger) we fail */
+    if (__builtin_expect(w->g->stealing_disabled, 0))
+        return 0;
+
+    CILK_ASSERT(w->l->type == WORKER_SYSTEM || w->l->team == w);
+
+    /* If there is only one processor work can still be stolen.
+       There must be only one worker to prevent stealing. */
+    CILK_ASSERT(w->g->total_workers > 1);
+
+/*
+    // If we're replaying a log, override the victim.  -1 indicates that
+    // we've exhausted the list of things this worker stole when we recorded
+    // the log so just return.  If we're not replaying a log,
+    // replay_get_next_recorded_victim() just returns the victim ID passed in.
+    n = replay_get_next_recorded_victim(w, n);
+    if (-1 == n)
+        return 0;
+*/
+
+    START_INTERVAL(w, INTERVAL_FIBER_ALLOCATE) {
+        /* Verify that we can get a stack.  If not, no need to continue. */
+        fiber = cilk_fiber_allocate(&w->l->fiber_pool);
+    } STOP_INTERVAL(w, INTERVAL_FIBER_ALLOCATE);
+
+
+    if (NULL == fiber) {
+#if FIBER_DEBUG >= 2
+        fprintf(stderr, "w=%d: failed steal because we could not get a fiber\n",
+                w->self);
+#endif        
+        return 0;
+    }
+
+    /* Attempt to steal work from our own ready list */
+    if (worker_trylock_other(w, w)) {
+        DBGPRINTF ("%d-%p: Attempt steal work from worker %d\n",
+                   w->self, GetCurrentFiber(), w->self );
+        if( w->ready_list.head_next_ready_frame ) {
+            if( steal_from_ready_list(w, w, fiber) ) {
+                success = 1;
+                stolen_from_ready_list = 1;
+                STOP_INTERVAL(w, INTERVAL_STEAL_SUCCESS);
+            } else {
+                // TODO: Need a different condition here but don't care
+                NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_USER_WORKER);
+            }
+            // printf( "%d: stolen from ready list\n", w->self );
+            // Should ready list be an array with pointers? Makes it easier
+            // to steal half - need to know number of tasks on ready_list.
+            //
+            // Pushing on ready_list requires lock on own deque, unless we
+            // make the ready_list lock-free (2 threads at most: own + thief)
+        } else {
+            NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_EMPTYQ);
+        }
+        worker_unlock_other(w, w);
+    } else {
+        NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_LOCK);
+    }
+
+    // Record whether work was stolen.  When true, this will flag
+    // setup_for_execution_pedigree to increment the pedigree
+    w->l->work_stolen = success;
+
+    if (0 == success) {
+        // failed to steal work.  Return the fiber to the pool.
+        START_INTERVAL(w, INTERVAL_FIBER_DEALLOCATE) {
+            int ref_count = cilk_fiber_remove_reference(fiber, &w->l->fiber_pool);
+            // Fibers we use when trying to steal should not be active,
+            // and thus should not have any other references.
+            CILK_ASSERT(0 == ref_count);
+        } STOP_INTERVAL(w, INTERVAL_FIBER_DEALLOCATE);
+    }
+    else
+    {
+        cilk_fiber_reset_state(fiber,
+                               fiber_proc_to_resume_user_code_for_pending_steal);
+        // Record the pedigree of the frame that w has stolen.
+        // record only if CILK_RECORD_LOG is set
+        replay_record_steal(w, w->self);
+    }
+    return success;
+}
+
 static void random_steal(__cilkrts_worker *w)
 {
     __cilkrts_worker *victim = NULL;
@@ -1266,10 +1384,15 @@ static void random_steal(__cilkrts_worker *w)
             NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_USER_WORKER);
 
         } else if( victim->ready_list.head_next_ready_frame ) {
-            steal_from_ready_list(w, victim, fiber);
-            victim_id = victim->self;
-            success = 1;
-            stolen_from_ready_list = 1;
+            if( steal_from_ready_list(w, victim, fiber) ) {
+                victim_id = victim->self;
+                success = 1;
+                stolen_from_ready_list = 1;
+                STOP_INTERVAL(w, INTERVAL_STEAL_SUCCESS);
+            } else {
+                // TODO: Need a different condition here but don't care
+                NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_USER_WORKER);
+            }
             // printf( "%d: stolen from ready list\n", w->self );
             // Should ready list be an array with pointers? Makes it easier
             // to steal half - need to know number of tasks on ready_list.
@@ -2112,10 +2235,13 @@ static full_frame* check_for_work(__cilkrts_worker *w)
                 __cilkrts_worker_unlock(w);
             }
 
-            // If we are about to do a random steal, we should have no
-            // full frame...
-            CILK_ASSERT(NULL == w->l->frame_ff);
-            random_steal(w);
+            // Steal from our own ready-list
+            if( !own_ready_list_steal(w) ) {
+                // If we are about to do a random steal, we should have no
+                // full frame...
+                CILK_ASSERT(NULL == w->l->frame_ff);
+                random_steal(w);
+            }
         } STOP_INTERVAL(w, INTERVAL_STEALING);
 
         // If the steal was successful, then the worker has populated its next
@@ -2401,8 +2527,8 @@ static void worker_scheduler_init_function(__cilkrts_worker *w)
         for( int i=w->l->numa_node+1; i < w->g->numa_nodes; ++i )
             __sync_fetch_and_add(&w->g->numa_node_cum_threads[i], 1);
 
-        printf( "Worker self=%d type=%d on NUMA node %d, local index %d\n",
-                w->self, (int)w->l->type, w->l->numa_node, w->l->numa_local_self );
+        // printf( "Worker self=%d type=%d on NUMA node %d, local index %d\n",
+        // w->self, (int)w->l->type, w->l->numa_node, w->l->numa_local_self );
 
         // The following ensures that the static scheduler is not invoked
         // until all threads have recorded their NUMA information.
