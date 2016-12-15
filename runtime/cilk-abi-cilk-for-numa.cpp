@@ -60,6 +60,7 @@
 #include "metacall_impl.h"
 #include "global_state.h"
 #include "local_state.h"
+#include "tracing.h"
 #include <stdio.h> // TODO: remove
 #include <assert.h> // TODO: remove
 
@@ -506,11 +507,28 @@ struct __cilkrts_numa_args_tags {
 };
 
 template <typename count_t, typename F>
+static
+void call_cilk_for_loop_body_numa(count_t low, count_t high,
+				  F body, void *data,
+				  __cilkrts_worker *w,
+				  __cilkrts_pedigree *loop_root_pedigree) {
+    struct __cilkrts_stack_frame * sf = w->current_stack_frame;
+    /* What if NUMA flags have already been set on the parent frame?
+     * Do we override them? Possibly we can make this configurable by
+     * the programmer. For now we simply override. */
+    sf->flags |= CILK_FRAME_NUMA;
+    sf->numa_low = low;
+    sf->numa_high = high;
+    call_cilk_for_loop_body(low, high, body, data, w, loop_root_pedigree);
+}
+
+template <typename count_t, typename F>
 static void numa_call_fn( struct __cilkrts_stack_frame * sf ) {
     struct __cilkrts_numa_args_tags<count_t,F> * at
 	= (struct __cilkrts_numa_args_tags<count_t,F> *)sf->args_tags;
     __cilkrts_worker *w = __cilkrts_get_tls_worker();
     // printf( "call_fn for worker %d iter %d on numa %d\n", w->self, at->args.low, w->l->numa_node );
+    TRACER_RECORD1(w,"numa-call-fn",at->args.low);
     assert( w->l->numa_node == at->args.low );
     call_cilk_for_loop_body(at->args.low, at->args.high, at->args.body,
 			    at->args.data, w, at->args.loop_root_pedigree);
@@ -525,6 +543,15 @@ static void numa_call_fn( struct __cilkrts_stack_frame * sf ) {
     __cilkrts_inline_pop_frame(sf);
     if( sf->flags )
 	__cilkrts_leave_frame(sf);
+}
+
+static void add_pending_to_other_ready_list(
+    __cilkrts_worker *w, __cilkrts_worker *other, __cilkrts_pending_frame *pf) {
+    __cilkrts_mutex_lock(w, &other->l->lock);
+    pf->next_ready_frame = 0;
+    other->ready_list.tail->next_ready_frame = pf;
+    other->ready_list.tail = pf;
+    __cilkrts_mutex_unlock(w, &other->l->lock);
 }
 
 template <typename count_t, typename F>
@@ -593,14 +620,18 @@ static void cilk_for_numa_root(F body, void *data, count_t count, int grain)
 	    // error in the capture, which should be by value. Circumvent by
 	    // using the constant stored in w->l->numa_node.
 	    int n = w->l->numa_node;
-	    _Cilk_spawn cilk_for_numa_recursive(n, n+1, body, data,
-						1, w, &loop_root_pedigree);
+	    TRACER_RECORD1(w,"numa-spawn",n);
+	    // _Cilk_spawn cilk_for_numa_recursive(n, n+1, body, data,
+	    // 1, w, &loop_root_pedigree);
+	    _Cilk_spawn call_cilk_for_loop_body_numa(n, n+1, body, data, w, &loop_root_pedigree);
 	    // Need to refetch the worker after calling a spawning function.
 	    w = sf->worker;
+	    TRACER_RECORD0(w,"numa-continue-after-spawn");
 	} else { // create pending frame
 	    // printf( "worker %d on numa %d makes iteration %d pending\n", 
 	    // w->self, w->l->numa_node, node );
 	    // Create pending frame and associated stack frame
+	    TRACER_RECORD1(w,"numa-pending",node);
 	    __cilkrts_pending_frame *pf
 		= __cilkrts_pending_frame_create(sizeof(__cilkrts_numa_args_tags<count_t,F>));
 
@@ -627,19 +658,41 @@ static void cilk_for_numa_root(F body, void *data, count_t count, int grain)
 	    __cilkrts_detach_pending( pf );
 
 	    // Make pending frame ready to execute (issue)
-	    if( __sync_fetch_and_add( &pf->incoming_count, -1 ) == 1 )
-		// TODO: replace by worker on desired numa_node
-		// ? Create w->g->numa_ready_list[node]?
-		for( int i=0; i < w->g->system_workers; ++i ) {
+	    if( __sync_fetch_and_add( &pf->incoming_count, -1 ) == 1 ) {
+		// TODO: Create w->g->numa_ready_list[node] as a faster
+		//       alternative?
+		// Try to push the pending frame out to any worker on the
+		// appropriate NUMA node. Ideally we would only like to use
+		// system workers, but under some circumstances it is necessary
+		// to push to a user worker as well. At any rate, work stealing
+		// will pull the frame back if required.
+		bool done = false;
+		for( int i=0; i < w->g->total_workers; ++i ) {
 		    if( w->g->workers[i]->l->numa_node == node ) {
 			// printf( "publish iteration %d on worker %d with numa %d\n", node, i, w->g->workers[i]->l->numa_node );
-			__cilkrts_obj_metadata_add_pending_to_ready_list(
-			    w->g->workers[i], pf );
+			add_pending_to_other_ready_list( w, w->g->workers[i], pf );
+
+			done = true;
 			break;
 		    }
 		}
+		if( !done ) {
+		    // We need to cover the case where no thread is executing
+		    // on the requested NUMA node. In this case, we do
+		    // best-effort execution.
+		    // Clear NUMA constraints
+		    pf->numa_low = pf->numa_high = 0;
+		    // Send to any worker (should randomize).
+		    int i = w->g->workers[0] == w ? 1 : 0;
+		    add_pending_to_other_ready_list( w, w->g->workers[i], pf );
+		    printf( "WARNING: best-effort NUMA scheduling: numa %d to worker %d on node %d\n", node, w->g->workers[i]->self, w->g->workers[i]->l->numa_node );
+		}
+	    } else {
+		assert( 0 && "NUMA pending frame should be ready" );
+	    }
 	}
     }
+    TRACER_RECORD0(w,"for_numa_sync");
     _Cilk_sync;
 
     // Need to refetch the worker after calling a spawning function.
@@ -690,7 +743,7 @@ __cilkrts_cilk_for_numa_32(__cilk_abi_f32_t body, void *data,
     // Check for an empty range here as an optimization - don't need to do any
     // __cilkrts_stack_frame initialization
     if (count > 0)
-        cilk_for_numa_root(body, data, count, grain);
+        cilk_for_numa_root_recursive(body, data, count, grain);
 }
 
 /*
@@ -714,7 +767,7 @@ __cilkrts_cilk_for_numa_64(__cilk_abi_f64_t body, void *data,
     // Check for an empty range here as an optimization - don't need to do any
     // __cilkrts_stack_frame initialization
     if (count > 0)
-        cilk_for_numa_root(body, data, count, grain);
+        cilk_for_numa_root_recursive(body, data, count, grain);
 }
 
 } // end extern "C"
