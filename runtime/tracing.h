@@ -18,7 +18,7 @@ struct item_t {
     const char *event;
     char pad[64-sizeof(long)+2*sizeof(__intptr_t)+sizeof(const char*)];
 };
-#define CHUNK_SIZE 1024
+#define CHUNK_SIZE 4096
 struct event_tracer {
     FILE *fp;
     size_t nitems;

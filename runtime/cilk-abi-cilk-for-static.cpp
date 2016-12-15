@@ -306,6 +306,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 	    if( --counter == 0 )
 		return false; // bail out
 	}
+	TRACER_RECORD2(w,"static-received0",my_idx,my_slot);
 	// printf( "Worker %d (%d) received ok to run\n", my_idx, my_slot );
     }
 
@@ -321,6 +322,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 		int slot = w->g->numa_node_cum_threads[numa_node] + dst_idx;
 		pp_exec_count *c = &pp_exec_c[slot];
 		c->xid = s;
+		TRACER_RECORD2(w,"static-signal",dst_idx,slot);
 		// printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, my_slot, dst_idx, slot );
 	    }
 	}
@@ -331,9 +333,10 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 #endif
 
     // Execute loop body
-    TRACER_RECORD0(w,"static-work");
     // printf( "Worker %d (%d) read state %p numa=%d\n", my_idx, my_slot, s, numa_node );
+    TRACER_RECORD0(w,"static-exec-start");
     static_execute_capture( &s->capture, my_idx, my_slot );
+    TRACER_RECORD0(w,"static-exec-end");
     
 #if WITH_REDUCERS
     hypermap_local_view = 0;
@@ -356,6 +359,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 		reduce_and_destroy( s->capture.hypermap, s->capture.views,
 				    my_slot, slot );
 #endif
+		TRACER_RECORD2(w,"static-received",dst_idx,slot);
 		// printf( "Worker %d (%d) received completion from %d (%d)\n",
 		// my_idx, my_slot, dst_idx, slot );
 	    }
@@ -382,10 +386,13 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 
     if( w->l->type == WORKER_SYSTEM ) {
 	while( 1 ) {
+/*
 	    if( !static_numa_scheduler_once( w ) )
 		return;
 	    if( !dyn_snode || !signal_node_should_wait( dyn_snode ) )
 		return;
+*/
+	    static_numa_scheduler_once( w );
 	}
     }
 }
@@ -461,6 +468,8 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     // Get the worker. Could also read it out of sf (faster).
     __cilkrts_worker * w = __cilkrts_get_tls_worker();
     
+    TRACER_RECORD0(w,"static-start");
+
     if( ! __init_parallel )
     {
 	fprintf( stderr,
@@ -468,7 +477,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
         __parallel_initialize();
     }
 
-    // Ensure all workers have recorded their NUMA information.
+    // Ensure all system workers have recorded their NUMA information.
     // Note that user workers do not record their information in the same way!
     while( w->g->numa_P_init != w->g->system_workers ) {
 	__cilkrts_yield();
@@ -480,15 +489,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     bool system_wide = ( sf.flags & CILK_FRAME_NUMA ) ? false : true;
 
     // Determine our own NUMA node
-    int master_numa_node;
-    {
-	// TODO: avoid system calls
-	int cpu = sched_getcpu();
-	if( cpu >= 0 ) 
-	    master_numa_node = numa_node_of_cpu(cpu);
-	else
-	    master_numa_node = 0; // always works?
-    }
+    int master_numa_node = w->l->numa_node;
 
     // printf( "Cilk-static: system_wide=%d self=%d numa=%d\n", (int)system_wide, w->self, master_numa_node );
     
@@ -579,6 +580,8 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 
      // store fence if not TSO/x86-64
    
+    TRACER_RECORD0(w,"static-start-distrib");
+
     int log_threads;
 
     if( w->l->type == WORKER_USER ) {
@@ -590,6 +593,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	    pp_exec_count *c
 		= &pp_exec_c[w->g->numa_node_cum_threads[numa_nodes[i]]];
 	    c->xid = &s;
+	    TRACER_RECORD2(w,"static-signal-worker",numa_nodes[i],w->g->numa_node_cum_threads[numa_nodes[i]]);
 	}
     } else {
 	// Distribute work intra-socket
@@ -603,6 +607,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	    int slot = w->g->numa_node_cum_threads[master_numa_node] + 0;
 	    pp_exec_count *c = &pp_exec_c[slot];
 	    c->xid = &s;
+	    TRACER_RECORD2(w,"static-signal-inter",0,slot);
 	    // printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, -1, 0, slot );
 	}
 	
@@ -615,16 +620,21 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		    int slot = w->g->numa_node_cum_threads[master_numa_node] + dst_idx;
 		    pp_exec_count *c = &pp_exec_c[slot];
 		    c->xid = &s;
+		    TRACER_RECORD2(w,"static-signal-intra",dst_idx,slot);
 		    // printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, -1, dst_idx, slot );
 		}
 	    }
 	}
     }
 
+    TRACER_RECORD0(w,"static-exec-start");
+
     /* now go on and do the work */
     static_execute_capture( &s.capture,
 			    w->l->type == WORKER_USER ? num_threads-1
 			    : w->l->numa_local_self, -1 );
+
+    TRACER_RECORD0(w,"static-exec-done");
 
     // Wait for other threads to complete
     if( w->l->type == WORKER_USER ) {
@@ -642,6 +652,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		hypermap, hypermap_local_view,
 		HYPERMAP_GET(hypermap, hypermap_views, slot) );
 #endif
+	    TRACER_RECORD2(w,"static-receive-worker",numa_nodes[i],slot);
 	    // printf( "thread local 0 on node %d completed\n", numa_nodes[i] );
 	}
     } else {
@@ -665,6 +676,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 			hypermap, hypermap_local_view,
 			HYPERMAP_GET(hypermap, hypermap_views, slot) );
 #endif
+		    TRACER_RECORD2(w,"static-receive-intra",dst_idx,slot);
 		    // printf( "Worker %d (%d) received completion from %d (%d)\n",
 		    // my_idx, -1, dst_idx, slot );
 		}
@@ -685,6 +697,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		hypermap, hypermap_local_view,
 		HYPERMAP_GET(hypermap, hypermap_views, slot) );
 #endif
+	    TRACER_RECORD2(w,"static-receive-inter",0,slot);
 	    // printf( "Worker %d (%d) received completion from %d (%d)\n",
 	    // my_idx, -1, 0, slot );
 	}
@@ -714,6 +727,8 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	    __cilkrts_sync( &sf );
     }
     */
+
+    TRACER_RECORD0(w,"static-end");
 
     // Cleanup and unlink stack frame
     __cilkrts_inline_pop_frame(&sf);
