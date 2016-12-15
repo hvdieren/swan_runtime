@@ -4,10 +4,13 @@
 #ifndef INCLUDED_TRACING_DOT_H
 #define INCLUDED_TRACING_DOT_H
 
+#include "cilk/common.h"
 #include <stdio.h>
 #include <stdint.h>
 
-#define WITH_TRACING 0
+__CILKRTS_BEGIN_EXTERN_C
+
+#define WITH_TRACING 1
 
 struct item_t {
     long tick;
@@ -43,5 +46,7 @@ void destroy_event_tracer( event_tracer_t *t );
 void tracer_flush( event_tracer_t *t );
 
 void record( event_tracer_t *tracer, const char *e, __intptr_t id0, __intptr_t id1 );
+
+__CILKRTS_END_EXTERN_C
 
 #endif // INCLUDED_TRACING_DOT_H
