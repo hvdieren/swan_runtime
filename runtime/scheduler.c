@@ -627,6 +627,13 @@ static int can_steal_from_rl(__cilkrts_worker *victim)
         || (NULL != victim->ready_list.head_next_ready_frame);
 }
 
+/* conditions under which victim->ready_list.head can be stolen: */
+static int can_steal_from_rl_only(__cilkrts_worker *victim)
+{
+    /* Can steal from victim from ready-list */
+    return (NULL != victim->ready_list.head_next_ready_frame);
+}
+
 /* Return TRUE if the frame can be stolen, false otherwise */
 static int dekker_protocol(__cilkrts_worker *victim)
 {
@@ -1056,6 +1063,7 @@ static int steal_from_ready_list(__cilkrts_worker *w,
 
         /* loot_ff is the next frame that the thief W will execute */
         __cilkrts_push_next_frame(w, loot_ff);
+        TRACER_RECORD1(w,"rl-steal-push-next", loot_ff);
 
         // After this "push_next_frame" call, w now owns loot_ff.
         // child_ff = make_child(w, loot_ff, 0, fiber);
@@ -1231,32 +1239,43 @@ static int own_ready_list_steal(__cilkrts_worker *w)
         return 0;
     }
 
-    /* Attempt to steal work from our own ready list */
-    if (worker_trylock_other(w, w)) {
-        DBGPRINTF ("%d-%p: Attempt steal work from worker %d\n",
-                   w->self, GetCurrentFiber(), w->self );
-        if( w->ready_list.head_next_ready_frame ) {
-            if( steal_from_ready_list(w, w, fiber) ) {
-                success = 1;
-                stolen_from_ready_list = 1;
-                STOP_INTERVAL(w, INTERVAL_STEAL_SUCCESS);
-            } else {
-                // TODO: Need a different condition here but don't care
-                NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_USER_WORKER);
-            }
-            // printf( "%d: stolen from ready list\n", w->self );
-            // Should ready list be an array with pointers? Makes it easier
-            // to steal half - need to know number of tasks on ready_list.
-            //
-            // Pushing on ready_list requires lock on own deque, unless we
-            // make the ready_list lock-free (2 threads at most: own + thief)
-        } else {
-            NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_EMPTYQ);
-        }
-        worker_unlock_other(w, w);
-    } else {
-        NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_LOCK);
+    /* Execute a quick check before engaging in the THE protocol.
+       Avoid grabbing locks if there is nothing to steal. */
+    if (!can_steal_from_rl_only(w)) {
+        NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_EMPTYQ);
+        START_INTERVAL(w, INTERVAL_FIBER_DEALLOCATE) {
+            int ref_count = cilk_fiber_remove_reference(fiber, &w->l->fiber_pool);
+            // Fibers we use when trying to steal should not be active,
+            // and thus should not have any other references.
+            CILK_ASSERT(0 == ref_count);
+        } STOP_INTERVAL(w, INTERVAL_FIBER_DEALLOCATE);
+        return 0;
     }
+
+    /* Attempt to steal work from our own ready list */
+    __cilkrts_worker_lock(w); // unconditionally lock
+    TRACER_RECORD0(w,"rl-steal-lock");
+    DBGPRINTF ("%d-%p: Attempt steal work from worker %d\n",
+               w->self, GetCurrentFiber(), w->self );
+    if( w->ready_list.head_next_ready_frame ) {
+        if( steal_from_ready_list(w, w, fiber) ) {
+            success = 1;
+            stolen_from_ready_list = 1;
+            STOP_INTERVAL(w, INTERVAL_STEAL_SUCCESS);
+        } else {
+            // TODO: Need a different condition here but don't care
+            NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_USER_WORKER);
+        }
+        // printf( "%d: stolen from ready list\n", w->self );
+        // Should ready list be an array with pointers? Makes it easier
+        // to steal half - need to know number of tasks on ready_list.
+        //
+        // Pushing on ready_list requires lock on own deque, unless we
+        // make the ready_list lock-free (2 threads at most: own + thief)
+    } else {
+        NOTE_INTERVAL(w, INTERVAL_STEAL_FAIL_EMPTYQ);
+    }
+    __cilkrts_worker_unlock(w);
 
     // Record whether work was stolen.  When true, this will flag
     // setup_for_execution_pedigree to increment the pedigree
@@ -2179,6 +2198,7 @@ static void notify_children(__cilkrts_worker *w, unsigned int msg)
     int child_num;
     __cilkrts_worker *child;
     int num_sys_workers = w->g->P - 1;
+    int a = -1, b = -1;
 
     // If worker is "n", then its children are 2n + 1, and 2n + 2.
     child_num = (w->self << 1) + 1;
@@ -2186,13 +2206,17 @@ static void notify_children(__cilkrts_worker *w, unsigned int msg)
         child = w->g->workers[child_num];
         CILK_ASSERT(child->l->signal_node);
         signal_node_msg(child->l->signal_node, msg);
+        a = child_num;
         child_num++;
         if (child_num < num_sys_workers) {
             child = w->g->workers[child_num];
             CILK_ASSERT(child->l->signal_node);
             signal_node_msg(child->l->signal_node, msg);
+            b = child_num;
         }
     }
+    TRACER_RECORD1(w,"steal-failures-record",w->l->steal_failure_count);
+    TRACER_RECORD2(w,(msg ? "signal_node_wakeup" : "signal_node_wait"),a,b);
 }
 
 /*
@@ -2241,6 +2265,8 @@ static full_frame* check_for_work(__cilkrts_worker *w)
                 // full frame...
                 CILK_ASSERT(NULL == w->l->frame_ff);
                 random_steal(w);
+            } else {
+                TRACER_RECORD1(w,"own-ready-list-steal",w->l->next_frame_ff);
             }
         } STOP_INTERVAL(w, INTERVAL_STEALING);
 
@@ -2299,17 +2325,14 @@ static full_frame* search_until_work_found_or_done(__cilkrts_worker *w)
             // a frame that we should execute...
             CILK_ASSERT(NULL == w->l->next_frame_ff);
             //printf("came into dyn runtime\n");
-            notify_children_wait(w);
+            // notify_children_wait(w);
             // Most likely the following node_wait() will proceed immediately
             // in case the static runtime has been started up.
-            TRACER_RECORD0(w,"signal_node_wait");
             notify_children_wait(w);
             signal_node_wait(w->l->signal_node);
             // ...
             // Runtime is waking up.
             notify_children_run(w);
-
-            TRACER_RECORD0(w,"signal_node_wakeup");
 
             //static_scheduler_fn(w->self+1, w->l->signal_node);
             static_scheduler_fn(w, w->self, w->l->signal_node);//with new reversed ids
@@ -2552,7 +2575,6 @@ static void worker_scheduler_init_function(__cilkrts_worker *w)
         // ...
         // Runtime is waking up.
         notify_children_run(w);
-        TRACER_RECORD0(w,"signal_node_wakeup");
         w->l->steal_failure_count = 0;
         break;
     default:
