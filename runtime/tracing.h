@@ -10,7 +10,7 @@
 
 __CILKRTS_BEGIN_EXTERN_C
 
-#define WITH_TRACING 1
+#define WITH_TRACING 0
 
 struct item_t {
     long tick;

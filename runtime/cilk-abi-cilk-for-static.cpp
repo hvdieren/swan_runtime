@@ -96,6 +96,7 @@ extern "C" {
 struct capture_data {
     void *body;
     void *data;
+    int *work;
     int rewire;
     cilk32_t count32;
     cilk32_t delta32;
@@ -110,7 +111,7 @@ struct static_numa_state {
     struct capture_data capture;
 };
 
-struct pp_exec_count{
+struct pp_exec_count {
     struct static_numa_state *xid;
     char padd[64-sizeof(struct static_numa_state *)];
 
@@ -118,8 +119,6 @@ struct pp_exec_count{
 typedef struct pp_exec_count pp_exec_count;
 
 static pp_exec_count *pp_exec_c;
-static int nthreads;
-static bool __init_parallel=false;
 
 #define WITH_REDUCERS 1
 #if WITH_REDUCERS
@@ -206,26 +205,29 @@ static void notify_children_run(__cilkrts_worker *w)
 }
 
 static void
-static_execute_capture( struct capture_data * c, int my_idx, int my_slot ) {
+static_execute_capture( struct capture_data * c,
+			int my_idx, int my_slot, int my_work ) {
     if( c->is32f ) {
 	__cilk_abi_f32_t body32
 	    = reinterpret_cast<__cilk_abi_f32_t>(c->body);
 	cilk32_t idx = my_idx;
+	cilk32_t work = my_work;
 	cilk32_t count = c->count32;
 	cilk32_t delta = c->delta32;
-	cilk32_t low = std::min(delta*idx,count);
-	cilk32_t high = std::min(delta*(idx+1),count);
-	// printf( "exec32 %d (%d) count=%d %d-%d\n", my_idx, my_slot, count, low, high );
+	cilk32_t low = std::min(delta*work,count);
+	cilk32_t high = std::min(delta*(work+1),count);
+	// printf( "exec32 %d (%d) work=%d count=%d %d-%d\n", my_idx, my_slot, work, count, low, high );
 	(*body32)( c->data, low, high );
     } else {
 	__cilk_abi_f64_t body64
 	    = reinterpret_cast<__cilk_abi_f64_t>(c->body);
 	cilk64_t idx = my_idx;
+	cilk64_t work = my_work;
 	cilk64_t count = c->count64;
 	cilk64_t delta = c->delta64;
-	cilk64_t low = std::min(delta*idx,count);
-	cilk64_t high = std::min(delta*(idx+1),count);
-	// printf( "exec64 %d (%d) count=%ld %ld-%ld\n", my_idx, my_slot, count, low, high );
+	cilk64_t low = std::min(delta*work,count);
+	cilk64_t high = std::min(delta*(work+1),count);
+	// printf( "exec64 %d (%d) work=%ld count=%ld %ld-%ld\n", my_idx, my_slot, work, count, low, high );
 	(*body64)( c->data, low, high );
     }
 }
@@ -335,7 +337,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
     // Execute loop body
     // printf( "Worker %d (%d) read state %p numa=%d\n", my_idx, my_slot, s, numa_node );
     TRACER_RECORD0(w,"static-exec-start");
-    static_execute_capture( &s->capture, my_idx, my_slot );
+    static_execute_capture( &s->capture, my_idx, my_slot, s->capture.work[numa_node]+my_idx );
     TRACER_RECORD0(w,"static-exec-end");
     
 #if WITH_REDUCERS
@@ -379,11 +381,6 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 void
 static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 {
-    if( ! __init_parallel ) {
-	TRACER_RECORD0(w,"static-not-init");
-        return;
-    }
-
     if( w->l->type == WORKER_SYSTEM ) {
 	while( 1 ) {
 /*
@@ -397,26 +394,10 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
     }
 }
 
-void __parallel_initialize(void) {
-    pthread_t tid;
-    int i,j, nid, ret;
-
-    /* Do this only once */
-    if( __init_parallel )
-	return;
-
-    // TODO: with current structure, should we get the number of threads
-    //       from the main cilk runtime?
-    if(const char* env_n = getenv("CILK_NWORKERS")){
-	nthreads= atoi(env_n);
-    }
-    else{
-	nthreads=1;
-    }
-
-    pp_exec_c = new pp_exec_count[nthreads];
-    int c;
-    __init_parallel = true;
+void __parallel_initialize( global_state_t *g ) {
+    size_t nbytes = sizeof(*pp_exec_c) * g->total_workers;
+    pp_exec_c = (pp_exec_count *)__cilkrts_malloc( nbytes );
+    memset( pp_exec_c, 0, nbytes );
 }
 
 } // extern "C"
@@ -453,6 +434,8 @@ template <typename count_t, typename F>
 static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 #endif
 {
+    // TODO: check grainsize to decide on potential sequential implementation
+    
    /******************************IMPLEMENTATION BY MAHWISH*****************************/
     struct __cilkrts_stack_frame sf;
     int j, nid, num_children;
@@ -469,13 +452,6 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     __cilkrts_worker * w = __cilkrts_get_tls_worker();
     
     TRACER_RECORD0(w,"static-start");
-
-    if( ! __init_parallel )
-    {
-	fprintf( stderr,
-		 "Really, do we still need to initialize the static runtime?\n" );
-        __parallel_initialize();
-    }
 
     // Ensure all system workers have recorded their NUMA information.
     // Note that user workers do not record their information in the same way!
@@ -495,8 +471,9 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     
     // Allocate workers (by NUMA node)
     int numa_nodes[w->g->numa_nodes];
+    int work_items[w->g->numa_nodes];
     int num_numa_nodes = 0;
-    int num_threads = w->l->type == WORKER_USER ? 1 : 0; // this thread
+    int num_threads = 0;
     if( system_wide ) {
 	for( int i=0; i < w->g->numa_nodes; ++i ) {
 	    // printf( "Cilk-static: status node %d/%d: %d\n", i, w->g->numa_nodes, w->g->numa_allocate[i] );
@@ -505,14 +482,18 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		continue;
 	    if( __sync_bool_compare_and_swap( &w->g->numa_allocate[i], 0, 1 ) ){
 		numa_nodes[num_numa_nodes++] = i;
+		work_items[i] = num_threads;
 		num_threads += w->g->numa_node_threads[i];
 	    }
+	    if( w->l->type == WORKER_USER && w->l->numa_node == i )
+		num_threads++; // this thread
 	}
     } else {
 	// TODO: master may be on 'wrong' NUMA node. Therefore, consider
 	//       to first try to allocate on a NUMA node as described in
 	//       the NUMA mask of the stack frame. If that fails, take the
 	//       master's NUMA node.
+	work_items[master_numa_node] = 0;
 	if( w->g->numa_allocate[master_numa_node] == 0 ) {
 	    if( __sync_bool_compare_and_swap(
 		    &w->g->numa_allocate[master_numa_node], 0, 1 ) ) {
@@ -520,6 +501,8 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		num_threads += w->g->numa_node_threads[master_numa_node];
 	    }
 	}
+	if( w->l->type == WORKER_USER )
+	    num_threads++; // this thread
     }
     // printf( "Cilk-static: allocated %d NUMA nodes, using %d threads type %d\n",
     // num_numa_nodes, num_threads, w->l->type );
@@ -536,7 +519,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     // original view. The array is indexed using global indices, like the
     // synchronisation array (pp_exec_c).
     // Could use class storage_for_object<> from cilk headers
-    size_t view_size = HYPERMAP_VIEW_SIZE(hypermap);
+    size_t view_size = hypermap ? HYPERMAP_VIEW_SIZE(hypermap) : 0;
     size_t hmap_size = w->g->system_workers * view_size;
     char hypermap_buffer[hypermap ? hmap_size + CACHE_BLOCK_SIZE:1];
     char *hypermap_views;
@@ -565,6 +548,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
      s.capture.body = reinterpret_cast<void *>(body);
      s.capture.data = data;
      s.capture.is32f = is_32f<F>::value;
+     s.capture.work = work_items;
 #if WITH_REDUCERS
      s.capture.hypermap = hypermap;
      s.capture.views = hypermap_views;
@@ -632,7 +616,9 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     /* now go on and do the work */
     static_execute_capture( &s.capture,
 			    w->l->type == WORKER_USER ? num_threads-1
-			    : w->l->numa_local_self, -1 );
+			    : w->l->numa_local_self, -1,
+			    work_items[master_numa_node]
+			    + ( num_threads == 1 ? 0 : w->g->numa_node_threads[master_numa_node] ) );
 
     TRACER_RECORD0(w,"static-exec-done");
 
@@ -648,9 +634,11 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		__cilkrts_yield();
 	    }
 #if WITH_REDUCERS
-	    reduce_and_destroy_view(
-		hypermap, hypermap_local_view,
-		HYPERMAP_GET(hypermap, hypermap_views, slot) );
+	    if( hypermap ) {
+		reduce_and_destroy_view(
+		    hypermap, hypermap_local_view,
+		    HYPERMAP_GET(hypermap, hypermap_views, slot) );
+	    }
 #endif
 	    TRACER_RECORD2(w,"static-receive-worker",numa_nodes[i],slot);
 	    // printf( "thread local 0 on node %d completed\n", numa_nodes[i] );
@@ -672,9 +660,11 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 			__cilkrts_yield();
 		    }
 #if WITH_REDUCERS
-		    reduce_and_destroy_view(
-			hypermap, hypermap_local_view,
-			HYPERMAP_GET(hypermap, hypermap_views, slot) );
+		    if( hypermap ) {
+			reduce_and_destroy_view(
+			    hypermap, hypermap_local_view,
+			    HYPERMAP_GET(hypermap, hypermap_views, slot) );
+		    }
 #endif
 		    TRACER_RECORD2(w,"static-receive-intra",dst_idx,slot);
 		    // printf( "Worker %d (%d) received completion from %d (%d)\n",
@@ -693,9 +683,11 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 #if WITH_REDUCERS
 	    // TODO: do this reduction the other way round - should use
 	    // different local view in case of re-wiring
-	    reduce_and_destroy_view(
-		hypermap, hypermap_local_view,
-		HYPERMAP_GET(hypermap, hypermap_views, slot) );
+	    if( hypermap ) {
+		reduce_and_destroy_view(
+		    hypermap, hypermap_local_view,
+		    HYPERMAP_GET(hypermap, hypermap_views, slot) );
+	    }
 #endif
 	    TRACER_RECORD2(w,"static-receive-inter",0,slot);
 	    // printf( "Worker %d (%d) received completion from %d (%d)\n",
@@ -713,7 +705,6 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 #endif
 
     // TRACER_RECORD0(w,"leave-static-for-root");
-    // printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
 
     // De-allocate NUMA scheduling domains
     // printf( "cleaning up...\n" );
@@ -728,6 +719,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     }
     */
 
+    // printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
     TRACER_RECORD0(w,"static-end");
 
     // Cleanup and unlink stack frame

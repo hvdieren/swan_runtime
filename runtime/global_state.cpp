@@ -519,6 +519,8 @@ int cilkg_calc_total_workers()
     return g->P + calc_max_user_workers(g) - 1;
 }
 
+extern void __parallel_initialize(global_state_t *);
+
 // Should be called while holding the global lock.
 global_state_t* cilkg_init_global_state()
 {
@@ -594,6 +596,8 @@ global_state_t* cilkg_init_global_state()
 	g->numa_allocate[i] = 0;
     }
     g->numa_P_init = 0;
+
+    __parallel_initialize(g);
 
     return g;
 }

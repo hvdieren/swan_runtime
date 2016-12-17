@@ -3756,8 +3756,6 @@ static void init_workers(global_state_t *g)
     }
 }
 
-extern void __parallel_initialize(void);
-
 void __cilkrts_init_internal(int start)
 {
     global_state_t *g = NULL;
@@ -3814,8 +3812,6 @@ void __cilkrts_init_internal(int start)
             __cilkrts_start_workers(g, g->P - 1);
         global_os_mutex_unlock();
     }
-
-    __parallel_initialize();
 }
 
 void __cilkrts_flush_tracers() {
