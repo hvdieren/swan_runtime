@@ -383,13 +383,10 @@ static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 {
     if( w->l->type == WORKER_SYSTEM ) {
 	while( 1 ) {
-/*
 	    if( !static_numa_scheduler_once( w ) )
 		return;
 	    if( !dyn_snode || !signal_node_should_wait( dyn_snode ) )
 		return;
-*/
-	    static_numa_scheduler_once( w );
 	}
     }
 }
