@@ -120,7 +120,7 @@ typedef struct pp_exec_count pp_exec_count;
 
 static pp_exec_count *pp_exec_c;
 
-#define WITH_REDUCERS 1
+#define WITH_REDUCERS 0
 #if WITH_REDUCERS
 #define CACHE_BLOCK_SIZE 64
 static __thread void *hypermap_local_view;
@@ -217,6 +217,7 @@ static_execute_capture( struct capture_data * c,
 	cilk32_t low = std::min(delta*work,count);
 	cilk32_t high = std::min(delta*(work+1),count);
 	// printf( "exec32 %d (%d) work=%d count=%d %d-%d\n", my_idx, my_slot, work, count, low, high );
+	// TRACER_RECORD2(__cilkrts_get_tls_worker(),"exec-capture32",low,high);
 	(*body32)( c->data, low, high );
     } else {
 	__cilk_abi_f64_t body64
@@ -228,6 +229,7 @@ static_execute_capture( struct capture_data * c,
 	cilk64_t low = std::min(delta*work,count);
 	cilk64_t high = std::min(delta*(work+1),count);
 	// printf( "exec64 %d (%d) work=%ld count=%ld %ld-%ld\n", my_idx, my_slot, work, count, low, high );
+	// TRACER_RECORD2(__cilkrts_get_tls_worker(),"exec-capture64",low,high);
 	(*body64)( c->data, low, high );
     }
 }
@@ -302,13 +304,13 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 	pp_exec_count *c = &pp_exec_c[my_slot];
 
 	/* Busy wait loop for fast response */
-	int counter = 300000;
+	int counter = 128; // 300000;
         while( *((volatile void**)&c->xid) == 0) {
 	    __cilkrts_yield();
 	    if( --counter == 0 )
 		return false; // bail out
 	}
-	TRACER_RECORD2(w,"static-received0",my_idx,my_slot);
+	// TRACER_RECORD2(w,"static-received0",my_idx,my_slot);
 	// printf( "Worker %d (%d) received ok to run\n", my_idx, my_slot );
     }
 
@@ -324,7 +326,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 		int slot = w->g->numa_node_cum_threads[numa_node] + dst_idx;
 		pp_exec_count *c = &pp_exec_c[slot];
 		c->xid = s;
-		TRACER_RECORD2(w,"static-signal",dst_idx,slot);
+		// TRACER_RECORD2(w,"static-signal",dst_idx,slot);
 		// printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, my_slot, dst_idx, slot );
 	    }
 	}
@@ -336,7 +338,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 
     // Execute loop body
     // printf( "Worker %d (%d) read state %p numa=%d\n", my_idx, my_slot, s, numa_node );
-    TRACER_RECORD0(w,"static-exec-start");
+    TRACER_RECORD1(w,"static-exec-start",s->capture.work[numa_node]+my_idx);
     static_execute_capture( &s->capture, my_idx, my_slot, s->capture.work[numa_node]+my_idx );
     TRACER_RECORD0(w,"static-exec-end");
     
@@ -361,7 +363,7 @@ static_numa_scheduler_once( __cilkrts_worker *w ) {
 		reduce_and_destroy( s->capture.hypermap, s->capture.views,
 				    my_slot, slot );
 #endif
-		TRACER_RECORD2(w,"static-received",dst_idx,slot);
+		// TRACER_RECORD2(w,"static-received",dst_idx,slot);
 		// printf( "Worker %d (%d) received completion from %d (%d)\n",
 		// my_idx, my_slot, dst_idx, slot );
 	    }
@@ -449,10 +451,14 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
     // Execute sequentially if grainsize does not allow full parallelization
     if( grain == 0 )
 	grain = 1;
-    if( grain * w->g->P > count ) {
+    int req_threads = (count + grain - 1) / grain;
+    if( w->g->P == 1 || req_threads < w->g->numa_node_threads[w->l->numa_node] ) { // grain * w->g->P > count ) {
+    // if( grain * w->g->P > count ) {
+	TRACER_RECORD2(w,"static-start",grain,count);
 	body( data, 0, count );
+	TRACER_RECORD0(w,"static-end");
     } else {
-	TRACER_RECORD0(w,"static-start");
+	TRACER_RECORD2(w,"static-start",0,count);
 
 	// Ensure all system workers have recorded their NUMA information.
 	// Note that user workers do not record their information in the same way!
@@ -477,7 +483,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	int num_threads = 0;
 	if( system_wide ) {
 	    for( int i=0; i < w->g->numa_nodes; ++i ) {
-		// printf( "Cilk-static: status node %d/%d: %d\n", i, w->g->numa_nodes, w->g->numa_allocate[i] );
+		// printf( "Cilk-static: status node %d/%d: %d, %d threads\n", i, w->g->numa_nodes, w->g->numa_allocate[i], w->g->numa_node_threads[i] );
 		if( w->g->numa_allocate[i] != 0
 		    || w->g->numa_node_threads[i] == 0 )
 		    continue;
@@ -488,7 +494,11 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		}
 		if( w->l->type == WORKER_USER && w->l->numa_node == i )
 		    num_threads++; // this thread
+		// Only use as many threads as needed, overshooting a NUMA node
+		if( num_threads >= req_threads )
+		    break;
 	    }
+	    // TRACER_RECORD2(w,"static-alloc-systemwide",master_numa_node,num_numa_nodes);
 	} else {
 	    // TODO: master may be on 'wrong' NUMA node. Therefore, consider
 	    //       to first try to allocate on a NUMA node as described in
@@ -504,9 +514,14 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	    }
 	    if( w->l->type == WORKER_USER )
 		num_threads++; // this thread
+	    // TRACER_RECORD2(w,"static-alloc-numa",master_numa_node,num_numa_nodes);
 	}
-	// printf( "Cilk-static: allocated %d NUMA nodes, using %d threads type %d\n",
-	// num_numa_nodes, num_threads, w->l->type );
+	/*
+	printf( "Cilk-static: allocated %d NUMA nodes (system-wide=%d), "
+		"using %d threads (%d requested) type %d\n",
+		num_numa_nodes, system_wide, num_threads, req_threads,
+		w->l->type );
+	*/
 
 	// Ensure (all) workers are awake. They should now be able to observe
 	// that their NUMA node has been allocated and remain in the static
@@ -565,7 +580,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 
 	 // store fence if not TSO/x86-64
 
-	TRACER_RECORD0(w,"static-start-distrib");
+	// TRACER_RECORD0(w,"static-start-distrib");
 
 	int log_threads;
 
@@ -578,7 +593,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		pp_exec_count *c
 		    = &pp_exec_c[w->g->numa_node_cum_threads[numa_nodes[i]]];
 		c->xid = &s;
-		TRACER_RECORD2(w,"static-signal-worker",numa_nodes[i],w->g->numa_node_cum_threads[numa_nodes[i]]);
+		// TRACER_RECORD2(w,"static-signal-worker",numa_nodes[i],w->g->numa_node_cum_threads[numa_nodes[i]]);
 	    }
 	} else {
 	    // Distribute work intra-socket
@@ -592,7 +607,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 		int slot = w->g->numa_node_cum_threads[master_numa_node] + 0;
 		pp_exec_count *c = &pp_exec_c[slot];
 		c->xid = &s;
-		TRACER_RECORD2(w,"static-signal-inter",0,slot);
+		// TRACER_RECORD2(w,"static-signal-inter",0,slot);
 		// printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, -1, 0, slot );
 	    }
 
@@ -605,23 +620,26 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 			int slot = w->g->numa_node_cum_threads[master_numa_node] + dst_idx;
 			pp_exec_count *c = &pp_exec_c[slot];
 			c->xid = &s;
-			TRACER_RECORD2(w,"static-signal-intra",dst_idx,slot);
+			// TRACER_RECORD2(w,"static-signal-intra",dst_idx,slot);
 			// printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, -1, dst_idx, slot );
 		    }
 		}
 	    }
 	}
 
-	TRACER_RECORD0(w,"static-exec-start");
+	TRACER_RECORD1(w,"static-exec-start",
+		       work_items[master_numa_node]
+		       + ( num_threads == 1 ? 0 : w->g->numa_node_threads[master_numa_node] ) );
 
 	/* now go on and do the work */
 	static_execute_capture( &s.capture,
 				w->l->type == WORKER_USER ? num_threads-1
 				: w->l->numa_local_self, -1,
 				work_items[master_numa_node]
-				+ ( num_threads == 1 ? 0 : w->g->numa_node_threads[master_numa_node] ) );
+				+ ( (w->l->type == WORKER_USER) ? ( num_threads == 1 ? 0 : w->g->numa_node_threads[master_numa_node] )
+				    : w->l->numa_local_self ) );
 
-	TRACER_RECORD0(w,"static-exec-done");
+	TRACER_RECORD0(w,"static-exec-end");
 
 	// Wait for other threads to complete
 	if( w->l->type == WORKER_USER ) {
@@ -641,7 +659,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 			HYPERMAP_GET(hypermap, hypermap_views, slot) );
 		}
     #endif
-		TRACER_RECORD2(w,"static-receive-worker",numa_nodes[i],slot);
+		// TRACER_RECORD2(w,"static-receive-worker",numa_nodes[i],slot);
 		// printf( "thread local 0 on node %d completed\n", numa_nodes[i] );
 	    }
 	} else {
@@ -667,7 +685,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 				HYPERMAP_GET(hypermap, hypermap_views, slot) );
 			}
     #endif
-			TRACER_RECORD2(w,"static-receive-intra",dst_idx,slot);
+			// TRACER_RECORD2(w,"static-receive-intra",dst_idx,slot);
 			// printf( "Worker %d (%d) received completion from %d (%d)\n",
 			// my_idx, -1, dst_idx, slot );
 		    }
@@ -690,7 +708,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 			HYPERMAP_GET(hypermap, hypermap_views, slot) );
 		}
     #endif
-		TRACER_RECORD2(w,"static-receive-inter",0,slot);
+		// TRACER_RECORD2(w,"static-receive-inter",0,slot);
 		// printf( "Worker %d (%d) received completion from %d (%d)\n",
 		// my_idx, -1, 0, slot );
 	    }
@@ -705,7 +723,7 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 	hypermap_local_view = 0;
     #endif
 
-	// TRACER_RECORD0(w,"leave-static-for-root");
+	// // TRACER_RECORD0(w,"leave-static-for-root");
 
 	// De-allocate NUMA scheduling domains
 	// printf( "cleaning up...\n" );

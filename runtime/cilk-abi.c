@@ -142,7 +142,7 @@ void enter_frame_internal(__cilkrts_stack_frame *sf, uint32_t version)
     //DBGPRINTF
     // printf("%d-%p enter_frame_internal - sf %p, parent: %p args_tags: %p\n", w->self, w, sf, sf->call_parent, sf->args_tags); /*    */
 
-    TRACER_RECORD2(w,"enter_frame",sf,version);
+    // TRACER_RECORD2(w,"enter_frame",sf,version);
 }
 
 CILK_ABI_VOID __cilkrts_enter_frame(__cilkrts_stack_frame *sf)

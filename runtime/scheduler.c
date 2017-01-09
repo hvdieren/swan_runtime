@@ -1063,7 +1063,7 @@ static int steal_from_ready_list(__cilkrts_worker *w,
 
         /* loot_ff is the next frame that the thief W will execute */
         __cilkrts_push_next_frame(w, loot_ff);
-        TRACER_RECORD1(w,"rl-steal-push-next", loot_ff);
+        // TRACER_RECORD1(w,"rl-steal-push-next", loot_ff);
 
         // After this "push_next_frame" call, w now owns loot_ff.
         // child_ff = make_child(w, loot_ff, 0, fiber);
@@ -1254,7 +1254,7 @@ static int own_ready_list_steal(__cilkrts_worker *w)
 
     /* Attempt to steal work from our own ready list */
     __cilkrts_worker_lock(w); // unconditionally lock
-    TRACER_RECORD0(w,"rl-steal-lock");
+    // TRACER_RECORD0(w,"rl-steal-lock");
     DBGPRINTF ("%d-%p: Attempt steal work from worker %d\n",
                w->self, GetCurrentFiber(), w->self );
     if( w->ready_list.head_next_ready_frame ) {
@@ -2045,7 +2045,7 @@ user_code_resume_after_switch_into_runtime(cilk_fiber *fiber)
     NOTIFY_ZC_INTRINSIC("cilk_continue", sf);
     cilk_fiber_invoke_tbb_stack_op(fiber, CILK_TBB_STACK_ADOPT);
 
-    TRACER_RECORD2(w,"resume",sf,ff);
+    // TRACER_RECORD2(w,"resume",sf,ff);
 
     // Actually jump to user code.
     cilkrts_resume(sf, ff);
@@ -2215,7 +2215,7 @@ static void notify_children(__cilkrts_worker *w, unsigned int msg)
             b = child_num;
         }
     }
-    TRACER_RECORD1(w,"steal-failures-record",w->l->steal_failure_count);
+    // TRACER_RECORD1(w,"steal-failures-record",w->l->steal_failure_count);
     TRACER_RECORD2(w,(msg ? "signal_node_wakeup" : "signal_node_wait"),a,b);
 }
 
@@ -2266,7 +2266,7 @@ static full_frame* check_for_work(__cilkrts_worker *w)
                 CILK_ASSERT(NULL == w->l->frame_ff);
                 random_steal(w);
             } else {
-                TRACER_RECORD1(w,"own-ready-list-steal",w->l->next_frame_ff);
+                // TRACER_RECORD1(w,"own-ready-list-steal",w->l->next_frame_ff);
             }
         } STOP_INTERVAL(w, INTERVAL_STEALING);
 
@@ -2570,7 +2570,7 @@ static void worker_scheduler_init_function(__cilkrts_worker *w)
 
         // Runtime begins in a wait-state and is woken up by the first user
         // worker when the runtime is ready.
-        TRACER_RECORD0(w,"signal_node_wait_init");
+        // TRACER_RECORD0(w,"signal_node_wait_init");
         signal_node_wait(w->l->signal_node);
         // ...
         // Runtime is waking up.
@@ -2772,7 +2772,7 @@ static void do_sync(__cilkrts_worker *w, full_frame *ff,
     //int abandoned = 1;
     enum provably_good_steal_t steal_result = ABANDON_EXECUTION;
 
-    TRACER_RECORD2(w,"do_sync",sf,ff);
+    // TRACER_RECORD2(w,"do_sync",sf,ff);
 
     START_INTERVAL(w, INTERVAL_SYNC_CHECK) {
         BEGIN_WITH_WORKER_LOCK_OPTIONAL(w) {
@@ -3009,7 +3009,7 @@ static void do_return_from_spawn(__cilkrts_worker *w,
     full_frame *parent_ff;
     enum provably_good_steal_t steal_result = ABANDON_EXECUTION;
 
-    TRACER_RECORD2(w,"return_from_spawn",sf,ff);
+    // TRACER_RECORD2(w,"return_from_spawn",sf,ff);
 
     BEGIN_WITH_WORKER_LOCK_OPTIONAL(w) {
         CILK_ASSERT(ff);
@@ -3053,7 +3053,7 @@ static void do_return_from_spawn(__cilkrts_worker *w,
 
     // Cleanup the child frame.
     __cilkrts_destroy_full_frame(w, ff);
-    TRACER_RECORD2(w,"return_from_spawn_resolved",sf,ff);
+    // TRACER_RECORD2(w,"return_from_spawn_resolved",sf,ff);
     return;
 }
 
@@ -3189,7 +3189,7 @@ void __cilkrts_return(__cilkrts_worker *w)
     STOP_INTERVAL(w, INTERVAL_IN_RUNTIME);
     START_INTERVAL(w, INTERVAL_WORKING);
 
-    TRACER_RECORD0(w,"cilkrts_return");
+    // TRACER_RECORD0(w,"cilkrts_return");
 }
 
 static void __cilkrts_unbind_thread()
@@ -3327,7 +3327,7 @@ void __cilkrts_c_return_from_initial(__cilkrts_worker *w)
             w);
 #endif
 
-    TRACER_RECORD0(w,"return_from_initial");
+    // TRACER_RECORD0(w,"return_from_initial");
 
     w = NULL;
     
@@ -3550,7 +3550,7 @@ void destroy_worker(__cilkrts_worker *w)
     }
 
     if(w->l->event_tracer) {
-        TRACER_RECORD0(w,"destroy");
+        // TRACER_RECORD0(w,"destroy");
         destroy_event_tracer(w->l->event_tracer);
     }
 

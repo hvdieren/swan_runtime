@@ -264,9 +264,9 @@ CILK_API_INT __cilkrts_bump_worker_rank_internal(__cilkrts_worker *w)
     return 0;
 }
 
-CILK_API_VOID __cilkrts_record_event(__cilkrts_worker *w, const char *e,
-				     intptr_t a, intptr_t b)
+CILK_API_VOID __cilkrts_record_event(const char *e, intptr_t a, intptr_t b)
 {
+    __cilkrts_worker *w = __cilkrts_get_tls_worker();
     if( w )
 	record(w->l->event_tracer, e, a, b);
 }

@@ -18,13 +18,13 @@ struct item_t {
     const char *event;
     char pad[64-sizeof(long)+2*sizeof(__intptr_t)+sizeof(const char*)];
 };
-#define CHUNK_SIZE 4096
+#define TRACER_CHUNK_SIZE 4096
 struct event_tracer {
     FILE *fp;
     size_t nitems;
     size_t id;
     struct event_tracer *next;
-    struct item_t items[CHUNK_SIZE];
+    struct item_t items[TRACER_CHUNK_SIZE];
 };
 
 #if WITH_TRACING
