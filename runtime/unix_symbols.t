@@ -85,6 +85,19 @@ __cilkrts_sync
 __cilkrts_synched
 __cilkrts_watch_stack
 __cilkrts_worker_stub
+__cilkrts_enter_frame_df
+__cilkrts_detach_pending
+__cilkrts_obj_metadata_add_task
+__cilkrts_obj_metadata_wakeup_hard
+__cilkrts_obj_version_destroy
+__cilkrts_obj_version_init
+__cilkrts_pending_frame_create
+# Temporarily expose these
+__cilkrts_worker_lock
+__cilkrts_worker_unlock
+spin_mutex_lock
+spin_mutex_unlock
+#
 cilk_c_reducer_max_identity_char
 cilk_c_reducer_max_identity_double
 cilk_c_reducer_max_identity_float

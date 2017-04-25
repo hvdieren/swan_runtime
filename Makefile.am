@@ -90,6 +90,7 @@ libcilkrts_la_SOURCES =            \
   runtime/cilk_fiber-unix.cpp      \
   runtime/cilk_malloc.c            \
   runtime/c_reducers.c             \
+  runtime/dataflow_impl.c          \
   runtime/except-gcc.cpp           \
   runtime/frame_malloc.c           \
   runtime/full_frame.c             \
