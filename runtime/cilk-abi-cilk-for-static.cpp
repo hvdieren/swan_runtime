@@ -63,7 +63,10 @@ extern "C" {
 #include "global_state.h"
 #include "signal_node.h"
 #include "local_state.h"
+#include "tracing.h"
 #include <cilk/hyperobject_base.h>
+#include "os.h"
+#include "numa.h"
 
 /** added by mahwish**/
 #define MASTER 0
@@ -90,78 +93,85 @@ extern "C" {
 #   define CILKRTS_OPTIMIZED 0
 # endif
 #endif
-extern int cilk_rt_up;
-typedef unsigned pp_exec_id_t;
-struct pp_exec_t {
-    __cilk_abi_f32_t __unused_func;
-    void * __unused_arg;
-    pp_exec_id_t __unused_t_id;
-    //int argc;
-    bool __unused_control;
-    char pad[30];
-};
-struct pp_exec_count{
-  bool xid;
-  char padd[63];
-
-};
-struct param {
-    cilk32_t low32;
-    cilk32_t high32;
-    cilk64_t low64;
-    cilk64_t high64;
-    uint64_t * __unused_out;
-    int __unused_off;
-    char * __unused_data;
-    char padd[8];
-};
-struct tree_struct{
-   int t_id;
-   int tree_size;
-   int num_children;
-   int child[2];
-   uint64_t start_i;
-   uint64_t stop_i;
-   uint64_t delta;
-   char padd[12];
-};
-typedef struct pp_exec_t pp_exec_t;
-typedef struct pp_exec_count pp_exec_count;
-
 struct capture_data {
     void *body;
     void *data;
+    int *work;
+    int rewire;
+    cilk32_t count32;
+    cilk32_t delta32;
+    cilk64_t count64;
+    cilk64_t delta64;
+    __cilkrts_hyperobject_base *hypermap;
+    char *views;
     bool is32f;
 };
 
-static pp_exec_t *pp_exec;
-static pp_exec_count *pp_exec_c;
-static struct param *params;
-static int *id;
-static struct tree_struct *pp_tree;
-static int nthreads;
-static int num_socket;
-static int delta_socket;
-static int cores_per_socket;
-static struct capture_data capture;
+struct static_numa_state {
+    struct capture_data capture;
+};
 
-#define WITH_REDUCERS 1
+struct pp_exec_count {
+    struct static_numa_state *xid;
+    char padd[64-sizeof(struct static_numa_state *)];
+
+};
+typedef struct pp_exec_count pp_exec_count;
+
+static pp_exec_count *pp_exec_c;
+
+#define WITH_REDUCERS 0
 #if WITH_REDUCERS
 #define CACHE_BLOCK_SIZE 64
-static __cilkrts_hyperobject_base *hypermap_reducer;
-static char *hypermap_views;
 static __thread void *hypermap_local_view;
 
 // Round-up view size to multiple of cache block size
-#define HYPERMAP_VIEW_SIZE  (hypermap_reducer->__view_size + ((hypermap_reducer->__view_size + CACHE_BLOCK_SIZE-1) & (CACHE_BLOCK_SIZE-1)))
-#define HYPERMAP_SIZE  (HYPERMAP_VIEW_SIZE * nthreads)
-#define HYPERMAP_GET_WORKER(tid) (&hypermap_views[(tid)*HYPERMAP_VIEW_SIZE])
-#define HYPERMAP_GET_MASTER (void*)(((char*)hypermap_reducer)+hypermap_reducer->__view_offset)
-#define HYPERMAP_GET(tid) (tid==MASTER?HYPERMAP_GET_MASTER:HYPERMAP_GET_WORKER(tid))
+#define HYPERMAP_VIEW_SIZE(r)  (((r)->__view_size + CACHE_BLOCK_SIZE-1) & ~(size_t)(CACHE_BLOCK_SIZE-1))
+#define HYPERMAP_GET(r,buf,slot) (&(buf)[(slot)*HYPERMAP_VIEW_SIZE((r))])
 #endif
 
-static void noop(){
+/*
+ * Compiler-generated helper routines.
+ * Assign distinct name to avoid triggering a bug in clang/opt related
+ * to incompatible argument types on clang's internal __cilkrts_stack_frame
+ * type vs. the type used in source code.
+ *
+ * FIXME: use capture_spawn_arg_stack_frame to update the NUMA settings
+ *        on the stack frame. That would allow the use of _Cilk_spawn and
+ *        avoid the replication of the routines below
+ */
+static void __cilkrts_inline_detach(struct __cilkrts_stack_frame *self) {
+    struct __cilkrts_worker *w = self->worker;
+    struct __cilkrts_stack_frame *parent = self->call_parent;
+    struct __cilkrts_stack_frame *volatile *tail = w->tail;
+
+    self->spawn_helper_pedigree.rank = w->pedigree.rank;
+    self->spawn_helper_pedigree.parent = w->pedigree.parent;
+
+    self->call_parent->parent_pedigree.rank = w->pedigree.rank;
+    self->call_parent->parent_pedigree.parent = w->pedigree.parent;
+
+    w->pedigree.rank = 0;
+    w->pedigree.parent = &self->spawn_helper_pedigree;
+
+/*assert (tail < w->ltq_limit);*/
+    *tail++ = parent;
+
+/* The stores are separated by a store fence (noop on x86)
+   or the second store is a release (st8.rel on Itanium) */
+    w->tail = tail;
+    self->flags |= CILK_FRAME_DETACHED;
 }
+
+static void __cilkrts_inline_pop_frame(struct __cilkrts_stack_frame *sf) {
+    struct __cilkrts_worker *w = sf->worker;
+    w->current_stack_frame = sf->call_parent;
+    sf->call_parent = 0;
+}
+
+
+
+    
 /*typedef enum cilk_worker_type
 {
     WORKER_FREE,    ///< Unused worker - available to be bound to user threads
@@ -193,238 +203,200 @@ static void notify_children_run(__cilkrts_worker *w)
 {
     notify_children(w, 1);
 }
-static bool __init_parallel=false;
-//static void noop(){
-//}
-static bool is_up = false;
-static void pp_exec_init( pp_exec_t * x, pp_exec_count *c )
-{
-    c->xid = false;
-   // x->argc =0;
-  
+
+static void
+static_execute_capture( struct capture_data * c,
+			int my_idx, int my_slot, int my_work ) {
+    if( c->is32f ) {
+	__cilk_abi_f32_t body32
+	    = reinterpret_cast<__cilk_abi_f32_t>(c->body);
+	cilk32_t idx = my_idx;
+	cilk32_t work = my_work;
+	cilk32_t count = c->count32;
+	cilk32_t delta = c->delta32;
+	cilk32_t low = std::min(delta*work,count);
+	cilk32_t high = std::min(delta*(work+1),count);
+	// printf( "exec32 %d (%d) work=%d count=%d %d-%d\n", my_idx, my_slot, work, count, low, high );
+	// TRACER_RECORD2(__cilkrts_get_tls_worker(),"exec-capture32",low,high);
+	(*body32)( c->data, low, high );
+    } else {
+	__cilk_abi_f64_t body64
+	    = reinterpret_cast<__cilk_abi_f64_t>(c->body);
+	cilk64_t idx = my_idx;
+	cilk64_t work = my_work;
+	cilk64_t count = c->count64;
+	cilk64_t delta = c->delta64;
+	cilk64_t low = std::min(delta*work,count);
+	cilk64_t high = std::min(delta*(work+1),count);
+	// printf( "exec64 %d (%d) work=%ld count=%ld %ld-%ld\n", my_idx, my_slot, work, count, low, high );
+	// TRACER_RECORD2(__cilkrts_get_tls_worker(),"exec-capture64",low,high);
+	(*body64)( c->data, low, high );
+    }
 }
-static void pp_tree_init(struct tree_struct * t, int tree_size, int t_id)
-{
-    int subtree=0;
-    t->t_id= t_id;
-    if(tree_size <2){	/*leaf node*/
-         t->num_children=0;
+
+#if WITH_REDUCERS
+static void
+reducer_initialize_view( __cilkrts_hyperobject_base *hypermap_reducer,
+			 char *views, int slot ) {
+    // If we have reducers in this loop, initialize them here
+    if( hypermap_reducer ) {
+	// Initialize view
+	char *view = HYPERMAP_GET(hypermap_reducer,views,slot);
+	(*hypermap_reducer->__c_monoid.identity_fn)(
+	    (void*)&hypermap_reducer->__c_monoid, view );
+	// Initialize thread-local varibale
+	hypermap_local_view = view;
     }
-    else{
-        t->num_children= tree_size<3 ? 1: 2;
-	t->child[0]=  (nthreads-1)-(t_id-1);	/*left child id*/
-	subtree= tree_size/2;	/*left subtree size*/
-	pp_tree_init( &pp_tree[t->child[0]], subtree, id[t->child[0]]);
-	#if 0
-        t->child[0]=  t_id-1;	/*left child id*/
-	subtree= tree_size/2;	/*left subtree size*/
-	pp_tree_init( &pp_tree[t->child[0]], subtree, t->child[0]);
-	#endif
-        if(t->num_children>1){
-	    t->child[1]= (nthreads-1)-(t_id-(tree_size/2)-1); /*right child id*/
-	    subtree= (tree_size-1)- subtree;	/*right subtree size*/
-	    pp_tree_init( &pp_tree[t->child[1]], subtree, id[t->child[1]] );
-	    #if 0
-    i
-            t->child[1]= t_id-(tree_size/2)-1; /*right child id*/
-	    subtree= (tree_size-1)- subtree;	/*right subtree size*/
-	    pp_tree_init( &pp_tree[t->child[1]], subtree, t->child[1] );
-            #endif
-	}
-    }
-    #if 0 //without reversed ids//
-    else{
-        t->num_children= tree_size<3 ? 1: 2;
-	t->child[0]=  t_id+1;	/*left child id*/
-	subtree= tree_size/2;	/*left subtree size*/
-	pp_tree_init( &pp_tree[t->child[0]], subtree, t->child[0]);
-	if(t->num_children>1){
-	    t->child[1]= t_id+(tree_size/2)+1; /*right child id*/
-	    subtree= (tree_size-1)- subtree;	/*right subtree size*/
-	    pp_tree_init( &pp_tree[t->child[1]], subtree, t->child[1] );
-	}
-    }
-    #endif
 }
 
 static void
-pp_exec_submit(int id)
-{
-    // bool xid;
-    pp_exec_t *x= &pp_exec[id];
-    pp_exec_count *c= &pp_exec_c[id];
-    // xid= c->xid;
-    c->xid= true;
-    // assert(xid != c->xid);
+reduce_and_destroy_view( __cilkrts_hyperobject_base *hypermap_reducer,
+			 void *left, void *right ) {
+    if( hypermap_reducer ) {
+	// Reduce results from other thread
+	(*hypermap_reducer->__c_monoid.reduce_fn)(
+	    (void*)&hypermap_reducer->__c_monoid, left, right );
+	// Destroy other thread's view
+	(*hypermap_reducer->__c_monoid.destroy_fn)(
+	    (void*)&hypermap_reducer->__c_monoid, right );
+    }
 }
-static void asm_pause()
-{
-    // should help hyperthreads
-    // __asm__ __volatile__( "pause" : : : );
+
+static void
+reduce_and_destroy( __cilkrts_hyperobject_base *hypermap_reducer,
+		    char *views, int left_slot, int right_slot ) {
+    if( hypermap_reducer ) {
+	reduce_and_destroy_view(
+	    hypermap_reducer,
+	    HYPERMAP_GET( hypermap_reducer, views, left_slot ),
+	    HYPERMAP_GET( hypermap_reducer, views, right_slot ) );
+    }
 }
-static void pp_exec_wait( int id )
-{
-   pp_exec_count *c= &pp_exec_c[id];
-   while( c->xid==true) sched_yield();
+
+#endif // WITH_REDUCERS
+
+
+static bool
+static_numa_scheduler_once( __cilkrts_worker *w ) {
+    assert( w->l->type == WORKER_SYSTEM );
+
+    // Get intra-node thread index
+    int numa_node = w->l->numa_node;
+
+    // Check if NUMA node has been allocated. If not, bail out.
+    if( !w->g->numa_allocate[numa_node] )
+	return false;
+
+    int my_idx = w->l->numa_local_self;
+    int my_slot = w->g->numa_node_cum_threads[numa_node] + my_idx;
+    // not counting user worker in thread count
+    int num_threads = w->g->numa_node_threads[numa_node];
+
+    int log_threads = 0;
+    for( int n=num_threads-1; n != 0; n>>=1 ) { ++log_threads; }
+
+    // Now we have a fork barrier between num_threads threads.
+    // The lowest-numbered thread listens to the overall (inter-numa) master.
+    // In the case of a user worker, that is the master.
+    if( 1 /*my_idx != 0*/ ) { // 0 waits for WORKER_USER
+	// Wait to start
+	// int src_idx = (my_idx & 1) ? (my_idx ^ 1) : (my_idx >> 1);
+	pp_exec_count *c = &pp_exec_c[my_slot];
+
+	/* Busy wait loop for fast response */
+	int counter = 128; // 300000;
+        while( *((volatile void**)&c->xid) == 0) {
+	    __cilkrts_yield();
+	    if( --counter == 0 )
+		return false; // bail out
+	}
+	// TRACER_RECORD2(w,"static-received0",my_idx,my_slot);
+	// printf( "Worker %d (%d) received ok to run\n", my_idx, my_slot );
+    }
+
+    // This is how we get the state
+    struct static_numa_state * s = pp_exec_c[my_slot].xid;
+
+    for( int p=log_threads; p > 0; --p ) {
+	int mask = (1<<p)-1;
+	if( (my_idx & mask) == 0 ) {
+	    // Signal other thread
+	    int dst_idx = my_idx | (1<<(p-1));
+	    if( dst_idx < num_threads && dst_idx != s->capture.rewire ) {
+		int slot = w->g->numa_node_cum_threads[numa_node] + dst_idx;
+		pp_exec_count *c = &pp_exec_c[slot];
+		c->xid = s;
+		// TRACER_RECORD2(w,"static-signal",dst_idx,slot);
+		// printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, my_slot, dst_idx, slot );
+	    }
+	}
+    }
+
+#if WITH_REDUCERS
+    reducer_initialize_view( s->capture.hypermap, s->capture.views, my_slot );
+#endif
+
+    // Execute loop body
+    // printf( "Worker %d (%d) read state %p numa=%d\n", my_idx, my_slot, s, numa_node );
+    TRACER_RECORD1(w,"static-exec-start",s->capture.work[numa_node]+my_idx);
+    static_execute_capture( &s->capture, my_idx, my_slot, s->capture.work[numa_node]+my_idx );
+    TRACER_RECORD0(w,"static-exec-end");
+    
+#if WITH_REDUCERS
+    hypermap_local_view = 0;
+#endif
+
+    // Wait for completion of other threads
+    for( int p=log_threads; p > 0; --p ) {
+	int mask = (1<<p)-1;
+	if( (my_idx & mask) == 0 ) {
+	    int dst_idx = my_idx | (1<<(p-1));
+	    if( dst_idx < num_threads && dst_idx != s->capture.rewire ) {
+		int slot = w->g->numa_node_cum_threads[numa_node] + dst_idx;
+		pp_exec_count *c = &pp_exec_c[slot];
+
+		/* Busy wait loop for fast response */
+		while( *((volatile void**)&c->xid) != 0 ) {
+		    __cilkrts_yield();
+		}
+#if WITH_REDUCERS
+		reduce_and_destroy( s->capture.hypermap, s->capture.views,
+				    my_slot, slot );
+#endif
+		// TRACER_RECORD2(w,"static-received",dst_idx,slot);
+		// printf( "Worker %d (%d) received completion from %d (%d)\n",
+		// my_idx, my_slot, dst_idx, slot );
+	    }
+	}
+    }
+
+    // Signal threads that we are done
+    {
+	pp_exec_count *c = &pp_exec_c[my_slot];
+	c->xid = 0;
+	// printf( "Worker %d (%d) signaled done\n", my_idx, my_slot );
+    }
+
+    return true;
 }
 
 void
-static_scheduler_fn( int tid, signal_node_t * dyn_snode )
+static_scheduler_fn( __cilkrts_worker *w, int tid, signal_node_t * dyn_snode )
 {
-    int idx= (nthreads-1)-tid;
-    pp_exec_t *x = &pp_exec[idx];
-    pp_exec_count *c = &pp_exec_c[idx];
-    struct tree_struct *p_tree= &pp_tree[idx];
-    struct param *p= &params[idx];
-    /*pp_exec_t *x = &pp_exec[tid];
-    pp_exec_count *c = &pp_exec_c[tid];
-    struct tree_struct *p_tree= &pp_tree[tid];
-    struct param *p= &params[tid];*/
-    int num_children;
-    int j,k;
-
-    if( ! __init_parallel )
-        return;
-
-
-    num_children = p_tree->num_children;
-    while( 1 ) {
-	/* Busy wait loop for fast response */
-        while( *((volatile bool*)&c->xid) == false) {
-	    // We are polling Cilk's thread signal node. If it says wait,
-	    // we run, if it says continue, we stop.
-	    if( !signal_node_should_wait( dyn_snode ) ) {
-		// printf( "static sched tid=%d leaving\n", tid );
+    if( w->l->type == WORKER_SYSTEM ) {
+	while( 1 ) {
+	    if( !static_numa_scheduler_once( w ) )
 		return;
-	    }
-	    sched_yield();
-	    asm_pause();
+	    if( !dyn_snode || !signal_node_should_wait( dyn_snode ) )
+		return;
 	}
-      /*  for(k=0; k< num_children; k++)
-            printf("thread : %d , child[%d]: %d \n", tid, k, p_tree->child[k]);	*/
-	// Signal other threads to get going
-	for(j=0; j<num_children; j++) {
-	    pp_exec_submit( p_tree->child[j] );
-        }
-
-#if WITH_REDUCERS
-	// If we have reducers in this loop, initialize them here
-       if( hypermap_reducer ) {
-           hypermap_local_view = HYPERMAP_GET(tid);
-           (*hypermap_reducer->__c_monoid.identity_fn)(
-               (void*)&hypermap_reducer->__c_monoid, HYPERMAP_GET(tid) );
-       }
-#endif
-
-       // Execute loop body
-       if( capture.is32f ) {
-           __cilk_abi_f32_t body32
-               = reinterpret_cast<__cilk_abi_f32_t>(capture.body);
-           (*body32)( capture.data, p->low32, p->high32 );
-       } else {
-           __cilk_abi_f64_t body64
-               = reinterpret_cast<__cilk_abi_f64_t>(capture.body);
-           (*body64)( capture.data, p->low64, p->high64 );
-       }
-       // Wait for other threads to complete
-       for(j=0; j<num_children; j++) {
-           pp_exec_wait(p_tree->child[j]);
-#if WITH_REDUCERS
-	   if( hypermap_reducer ) {
-	       // Reduce results from other thread
-	       (*hypermap_reducer->__c_monoid.reduce_fn)(
-		   (void*)&hypermap_reducer->__c_monoid,
-		   HYPERMAP_GET(tid), HYPERMAP_GET(p_tree->child[j]) );
-	       // Destroy other thread's view
-	       (*hypermap_reducer->__c_monoid.destroy_fn)(
-		   (void*)&hypermap_reducer->__c_monoid,
-		   HYPERMAP_GET(p_tree->child[j]) );
-	   }
-#endif
-       }
-#if WITH_REDUCERS
-       hypermap_local_view = 0; // erase
-#endif
-       /* Signal we're done */
-       c->xid= false;
-    } //end if while
+    }
 }
 
-void __parallel_initialize(void) {
-    pthread_t tid;
-    int i,j, nid, ret;
-
-    /* Do this only once */
-    if( __init_parallel )
-	return;
-
-    // TODO: with current structure, should we get the number of threads
-    //       from the main cilk runtime?
-    if(const char* env_n = getenv("CILK_NWORKERS")){
-	nthreads= atoi(env_n);
-    }
-    else{
-	nthreads=1;
-    }
-
-    if(const char* env_n = getenv("MACHINE")){
-	num_socket= atoi(env_n);
-	if(strcmp(env_n,"jacob")==0){
-	    cores_per_socket=12; 
-	}
-	else if(strcmp(env_n,"hvan03")==0){
-	    cores_per_socket=8;
-	}
-	else if(strcmp(env_n,"hpdc")==0){
-	    cores_per_socket=8;
-	}
-    }else{
-	cores_per_socket=8; //assume hpdc 
-    }
-    /*calculate over how many sockets the threds will be spread, and how many threads/socket*/
-    num_socket= (nthreads+cores_per_socket-1)/cores_per_socket;  //assumption: correct number of threads given
-    delta_socket= (nthreads + num_socket-1)/ num_socket;
-    /*allocate memory for data structures*/
-    // pp_tree= (struct tree_struct *) malloc(nthreads * sizeof(struct tree_struct));
-    pp_exec = new pp_exec_t[nthreads];
-    pp_exec_c = new pp_exec_count[nthreads];
-    id= new int[nthreads];
-    pp_tree= new struct tree_struct[nthreads];
-    params= new struct param[nthreads];
-    /* tree structure initialisation*/
-    #if 0// moved the code after id init
-    for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
-	int rem= nthreads-nid;
-	int size= std::min(rem, delta_socket);
-	pp_tree_init(&pp_tree[nid],size,nid);
-    } 
-    #endif
-    for( i=0; i < nthreads; ++i ) {
-	//id[i] =i;
-	//pp_exec_c[i].xid=false;
-	id[i] =(nthreads-1)-i; //mirroring ids
-	pp_exec_c[i].xid=false;
-    }
-    for (j=0, nid=0; j<num_socket; nid+=delta_socket, j++){
-	int rem= nthreads-nid;
-	int size= std::min(rem, delta_socket);
-	pp_tree_init(&pp_tree[nid],size,id[nid]);
-    }
-    int c;
-    /*for(c=0; c < nthreads; c++){
-      printf("\nthread indx: %d, thread id: %d, num_children=%d\n", c, id[c], pp_tree[c].num_children ); 
-      for(j=0; j< pp_tree[c].num_children; j++)
-        printf("child[%d] indx: %d, id: %d\n", j, pp_tree[c].child[j], id[pp_tree[c].child[j]]);
-    }*/
-    __init_parallel = true;
-    is_up = true;
-    _Cilk_spawn noop();
-    __cilkrts_worker *w= __cilkrts_get_tls_worker();
-    //CILK_ASSERT(w->g->workers[0]->l->signal_node);
-    // signal_node_msg(w->g->workers[0]->l->signal_node, 1); //exclusively signal worker 0 
-     notify_children_run(w);
-     //notify_children_run(w->g->workers[0]);
-    printf( "runtime up...\n" );
+void __parallel_initialize( global_state_t *g ) {
+    size_t nbytes = sizeof(*pp_exec_c) * g->total_workers;
+    pp_exec_c = (pp_exec_count *)__cilkrts_malloc( nbytes );
+    memset( pp_exec_c, 0, nbytes );
 }
 
 } // extern "C"
@@ -462,122 +434,318 @@ static void cilk_for_root_static(F body, void *data, count_t count, int grain)
 #endif
 {
    /******************************IMPLEMENTATION BY MAHWISH*****************************/
+    struct __cilkrts_stack_frame sf;
     int j, nid, num_children;
-    if( ! __init_parallel )
-    {
-        __parallel_initialize();
-    }
 
-   // notify_children_run(__cilkrts_get_tls_worker());
+    // Ensure we have a worker so that we can probe the global state
+    // of the scheduler. Typically we need to enter the runtime when we call
+    // this method. This also initializes the static runtime part.
+    // Note that we do not want to use the trick '_Cilk_spawn noop()' because
+    // that allows the current frame to be stolen while noop() executes, which
+    // means we won't know for sure who is the master and who is the slave.
+    __cilkrts_enter_frame_1(&sf);
+
+    // Get the worker. Could also read it out of sf (faster).
+    __cilkrts_worker * w = __cilkrts_get_tls_worker();
     
-    // printf("CILK-STATIC SCHEDULER-OPTIMIZED- number of threads=%d\n", nthreads);
-#if WITH_REDUCERS
-     // could use class storage_for_object<> from cilk headers
-     hypermap_reducer = hypermap;
-     char hypermap_buffer[hypermap ? HYPERMAP_SIZE+CACHE_BLOCK_SIZE:1];
-
-     if( hypermap ) {
-        // Stack-allocate views.
-        uintptr_t offset = uintptr_t(&hypermap_buffer[0])
-            & uintptr_t(CACHE_BLOCK_SIZE-1);
-        // printf( "view size: %ld * %d = %ld\n",
-        //         HYPERMAP_VIEW_SIZE, nthreads, HYPERMAP_SIZE );
-        hypermap_views = &hypermap_buffer[CACHE_BLOCK_SIZE-offset];
-        assert( (uintptr_t(hypermap_views) & uintptr_t(CACHE_BLOCK_SIZE-1)) == 0 );
-     } else {
-        hypermap_views = NULL;
-     }
-
-     // Initialize pointer to our local view
-     hypermap_local_view = hypermap_reducer ? HYPERMAP_GET(MASTER) : 0;
-#endif
-
-    capture.body = reinterpret_cast<void *>(body);
-    capture.data = data;
-    capture.is32f = is_32f<F>::value;
-    if( capture.is32f ) {
-       count_t delta = (count+nthreads-1)/nthreads;
-       for (int i=0; i<nthreads; i++){
-           params[i].low32 = std::min((delta)*i,count);
-           params[i].high32 = std::min(delta*(i+1),count);
-       }
+    // Execute sequentially if grainsize does not allow full parallelization
+    if( grain == 0 )
+	grain = 1;
+    int req_threads = (count + grain - 1) / grain;
+    if( w->g->P == 1 || req_threads < w->g->numa_node_threads[w->l->numa_node] ) { // grain * w->g->P > count ) {
+    // if( grain * w->g->P > count ) {
+	TRACER_RECORD2(w,"static-start",grain,count);
+	body( data, 0, count );
+	TRACER_RECORD0(w,"static-end");
     } else {
-       count_t delta = (count+nthreads-1)/nthreads;
-       for (int i=0; i<nthreads; i++){
-           params[i].low64 = std::min((delta)*i,count);
-           params[i].high64 = std::min(delta*(i+1),count);
-       }
+	TRACER_RECORD2(w,"static-start",0,count);
+
+	// Ensure all system workers have recorded their NUMA information.
+	// Note that user workers do not record their information in the same way!
+	while( w->g->numa_P_init != w->g->system_workers ) {
+	    __cilkrts_yield();
+	}
+
+	// Check if we are called with NUMA restrictions in the stack frame.
+	// If so, we should only use the workers on our own NUMA node. Else,
+	// we can use all workers.
+	bool system_wide = ( sf.flags & CILK_FRAME_NUMA ) ? false : true;
+
+	// Determine our own NUMA node
+	int master_numa_node = w->l->numa_node;
+
+	// printf( "Cilk-static: system_wide=%d self=%d numa=%d\n", (int)system_wide, w->self, master_numa_node );
+
+	// Allocate workers (by NUMA node)
+	int numa_nodes[w->g->numa_nodes];
+	int work_items[w->g->numa_nodes];
+	int num_numa_nodes = 0;
+	int num_threads = 0;
+	if( system_wide ) {
+	    for( int i=0; i < w->g->numa_nodes; ++i ) {
+		// printf( "Cilk-static: status node %d/%d: %d, %d threads\n", i, w->g->numa_nodes, w->g->numa_allocate[i], w->g->numa_node_threads[i] );
+		if( w->g->numa_allocate[i] != 0
+		    || w->g->numa_node_threads[i] == 0 )
+		    continue;
+		if( __sync_bool_compare_and_swap( &w->g->numa_allocate[i], 0, 1 ) ){
+		    numa_nodes[num_numa_nodes++] = i;
+		    work_items[i] = num_threads;
+		    num_threads += w->g->numa_node_threads[i];
+		}
+		if( w->l->type == WORKER_USER && w->l->numa_node == i )
+		    num_threads++; // this thread
+		// Only use as many threads as needed, overshooting a NUMA node
+		if( num_threads >= req_threads )
+		    break;
+	    }
+	    // TRACER_RECORD2(w,"static-alloc-systemwide",master_numa_node,num_numa_nodes);
+	} else {
+	    // TODO: master may be on 'wrong' NUMA node. Therefore, consider
+	    //       to first try to allocate on a NUMA node as described in
+	    //       the NUMA mask of the stack frame. If that fails, take the
+	    //       master's NUMA node.
+	    work_items[master_numa_node] = 0;
+	    if( w->g->numa_allocate[master_numa_node] == 0 ) {
+		if( __sync_bool_compare_and_swap(
+			&w->g->numa_allocate[master_numa_node], 0, 1 ) ) {
+		    numa_nodes[num_numa_nodes++] = master_numa_node;
+		    num_threads += w->g->numa_node_threads[master_numa_node];
+		}
+	    }
+	    if( w->l->type == WORKER_USER )
+		num_threads++; // this thread
+	    // TRACER_RECORD2(w,"static-alloc-numa",master_numa_node,num_numa_nodes);
+	}
+	/*
+	printf( "Cilk-static: allocated %d NUMA nodes (system-wide=%d), "
+		"using %d threads (%d requested) type %d\n",
+		num_numa_nodes, system_wide, num_threads, req_threads,
+		w->l->type );
+	*/
+
+	// Ensure (all) workers are awake. They should now be able to observe
+	// that their NUMA node has been allocated and remain in the static
+	// scheduler until this loop is done.
+	notify_children_run(w);
+
+    #if WITH_REDUCERS
+	// Allocate space for reducer views. Allocate one view for every
+	// system worker. This is the maximum required // for any invocation.
+	// If there is a user worker involved, it will be the master and use the
+	// original view. The array is indexed using global indices, like the
+	// synchronisation array (pp_exec_c).
+	// Could use class storage_for_object<> from cilk headers
+	size_t view_size = hypermap ? HYPERMAP_VIEW_SIZE(hypermap) : 0;
+	size_t hmap_size = w->g->system_workers * view_size;
+	char hypermap_buffer[hypermap ? hmap_size + CACHE_BLOCK_SIZE:1];
+	char *hypermap_views;
+
+	if( hypermap ) {
+	    // Stack-allocate views.
+	    uintptr_t offset = uintptr_t(&hypermap_buffer[0])
+		& uintptr_t(CACHE_BLOCK_SIZE-1);
+	    // printf( "view size: %ld * %d = %ld\n",
+	    //         HYPERMAP_VIEW_SIZE, num_threads, HYPERMAP_SIZE );
+	    hypermap_views = &hypermap_buffer[CACHE_BLOCK_SIZE-offset];
+	    assert( (uintptr_t(hypermap_views) & uintptr_t(CACHE_BLOCK_SIZE-1)) == 0 );
+	} else {
+	    hypermap_views = NULL;
+	}
+
+	// Initialize pointer to our local view
+	hypermap_local_view = hypermap
+	    ? (void *)(((char*)(hypermap))+(hypermap)->__view_offset)
+	    : (void *)0;
+    #endif
+
+	 // If we have multiple per-NUMA schedulers, then we also need the
+	 // capture to be private per scheduling domain
+	 struct static_numa_state s;
+	 s.capture.body = reinterpret_cast<void *>(body);
+	 s.capture.data = data;
+	 s.capture.is32f = is_32f<F>::value;
+	 s.capture.work = work_items;
+    #if WITH_REDUCERS
+	 s.capture.hypermap = hypermap;
+	 s.capture.views = hypermap_views;
+    #endif
+
+	 if( s.capture.is32f ) {
+	     s.capture.count32 = (cilk32_t)count;
+	     s.capture.delta32 = (cilk32_t)((count+num_threads-1)/num_threads);
+	 } else {
+	     s.capture.count64 = (cilk64_t)count;
+	     s.capture.delta64 = (cilk64_t)((count+num_threads-1)/num_threads);
+	 }
+
+	 // store fence if not TSO/x86-64
+
+	// TRACER_RECORD0(w,"static-start-distrib");
+
+	int log_threads;
+
+	if( w->l->type == WORKER_USER ) {
+	    // No re-wiring required
+	    s.capture.rewire = -1;
+	    // Distribute work across sockets
+	    for( int i=0; i < num_numa_nodes; ++i ) {
+		// Slot for first thread on NUMA node
+		pp_exec_count *c
+		    = &pp_exec_c[w->g->numa_node_cum_threads[numa_nodes[i]]];
+		c->xid = &s;
+		// TRACER_RECORD2(w,"static-signal-worker",numa_nodes[i],w->g->numa_node_cum_threads[numa_nodes[i]]);
+	    }
+	} else {
+	    // Distribute work intra-socket
+	    log_threads = 0;
+	    for( int n=num_threads-1; n != 0; n>>=1 ) { ++log_threads; }
+
+	    int my_idx = w->l->numa_local_self;
+	    s.capture.rewire = my_idx;
+
+	    if( my_idx != 0 ) {
+		int slot = w->g->numa_node_cum_threads[master_numa_node] + 0;
+		pp_exec_count *c = &pp_exec_c[slot];
+		c->xid = &s;
+		// TRACER_RECORD2(w,"static-signal-inter",0,slot);
+		// printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, -1, 0, slot );
+	    }
+
+	    for( int p=log_threads; p > 0; --p ) {
+		int mask = (1<<p)-1;
+		if( (my_idx & mask) == 0 ) {
+		    // Signal other thread
+		    int dst_idx = my_idx | (1<<(p-1));
+		    if( dst_idx < num_threads ) {
+			int slot = w->g->numa_node_cum_threads[master_numa_node] + dst_idx;
+			pp_exec_count *c = &pp_exec_c[slot];
+			c->xid = &s;
+			// TRACER_RECORD2(w,"static-signal-intra",dst_idx,slot);
+			// printf( "Worker %d (%d) signaled %d (%d) ok to run\n", my_idx, -1, dst_idx, slot );
+		    }
+		}
+	    }
+	}
+
+	TRACER_RECORD1(w,"static-exec-start",
+		       work_items[master_numa_node]
+		       + ( num_threads == 1 ? 0 : w->g->numa_node_threads[master_numa_node] ) );
+
+	/* now go on and do the work */
+	static_execute_capture( &s.capture,
+				w->l->type == WORKER_USER ? num_threads-1
+				: w->l->numa_local_self, -1,
+				work_items[master_numa_node]
+				+ ( (w->l->type == WORKER_USER) ? ( num_threads == 1 ? 0 : w->g->numa_node_threads[master_numa_node] )
+				    : w->l->numa_local_self ) );
+
+	TRACER_RECORD0(w,"static-exec-end");
+
+	// Wait for other threads to complete
+	if( w->l->type == WORKER_USER ) {
+	    for( int i=0; i < num_numa_nodes; ++i ) {
+		// Slot for first thread on NUMA node
+		int slot = w->g->numa_node_cum_threads[numa_nodes[i]];
+		pp_exec_count *c = &pp_exec_c[slot];
+
+		/* Busy wait loop for fast response */
+		while( *((volatile void**)&c->xid) != 0 ) {
+		    __cilkrts_yield();
+		}
+    #if WITH_REDUCERS
+		if( hypermap ) {
+		    reduce_and_destroy_view(
+			hypermap, hypermap_local_view,
+			HYPERMAP_GET(hypermap, hypermap_views, slot) );
+		}
+    #endif
+		// TRACER_RECORD2(w,"static-receive-worker",numa_nodes[i],slot);
+		// printf( "thread local 0 on node %d completed\n", numa_nodes[i] );
+	    }
+	} else {
+	    // Re-wired
+	    int my_idx = w->l->numa_local_self;
+	    // TODO: Reverse order of loop to get non-commutative reductions right
+	    for( int p=log_threads; p > 0; --p ) {
+		int mask = (1<<p)-1;
+		if( (my_idx & mask) == 0 ) {
+		    int dst_idx = my_idx | (1<<(p-1));
+		    if( dst_idx < num_threads ) {
+			int slot = w->g->numa_node_cum_threads[master_numa_node] + dst_idx;
+			pp_exec_count *c = &pp_exec_c[slot];
+
+			/* Busy wait loop for fast response */
+			while( *((volatile void**)&c->xid) != 0 ) {
+			    __cilkrts_yield();
+			}
+    #if WITH_REDUCERS
+			if( hypermap ) {
+			    reduce_and_destroy_view(
+				hypermap, hypermap_local_view,
+				HYPERMAP_GET(hypermap, hypermap_views, slot) );
+			}
+    #endif
+			// TRACER_RECORD2(w,"static-receive-intra",dst_idx,slot);
+			// printf( "Worker %d (%d) received completion from %d (%d)\n",
+			// my_idx, -1, dst_idx, slot );
+		    }
+		}
+	    }
+	    if( my_idx != 0 ) {
+		int slot = w->g->numa_node_cum_threads[master_numa_node] + 0;
+		pp_exec_count *c = &pp_exec_c[slot];
+
+		/* Busy wait loop for fast response */
+		while( *((volatile void**)&c->xid) != 0 ) {
+		    __cilkrts_yield();
+		}
+    #if WITH_REDUCERS
+		// TODO: do this reduction the other way round - should use
+		// different local view in case of re-wiring
+		if( hypermap ) {
+		    reduce_and_destroy_view(
+			hypermap, hypermap_local_view,
+			HYPERMAP_GET(hypermap, hypermap_views, slot) );
+		}
+    #endif
+		// TRACER_RECORD2(w,"static-receive-inter",0,slot);
+		// printf( "Worker %d (%d) received completion from %d (%d)\n",
+		// my_idx, -1, 0, slot );
+	    }
+	}
+
+	// TODO: the way we reduce results supports non-commutative
+	//       reducers only in specific circumstances.
+    #if WITH_REDUCERS
+	// The master always uses the leftmost view.
+	// The master has thus applied all updates to the final view.
+	// Unset variables
+	hypermap_local_view = 0;
+    #endif
+
+	// // TRACER_RECORD0(w,"leave-static-for-root");
+
+	// De-allocate NUMA scheduling domains
+	// printf( "cleaning up...\n" );
+	for( int i=0; i < num_numa_nodes; ++i ) {
+	    w->g->numa_allocate[numa_nodes[i]] = 0;
+	}
+
+	/* This bit is redundant as we do not spawn from within this procedure
+	if( sf.flags & CILK_FRAME_UNSYNCHED ) {
+	    if( !CILK_SETJMP(sf.ctx) )
+		__cilkrts_sync( &sf );
+	}
+	*/
+
+	// printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
+	TRACER_RECORD0(w,"static-end");
     }
 
-    /* store fence if not TSO/x86-64 */
-
-   
-   /* first distribute across socket */
-   /*for (j=1,  nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
-      pp_exec_submit( nid );
-   } */
-   for (j=1,  nid=nthreads-delta_socket-1; j<num_socket; nid-=delta_socket, j++){
-      pp_exec_submit( nid );
-   } 
-    /* now distribute within socket in a tree-like manner */
-    num_children = pp_tree[MASTER].num_children;
-    for(int i=0; i<num_children; i++){
-	pp_exec_submit( pp_tree[MASTER].child[i] );
-    }
-
-    /* now go on and do the work */
-    if( capture.is32f )
-       (*body)( capture.data, params[MASTER].low32, params[MASTER].high32 );
-    else
-       (*body)( capture.data, params[MASTER].low64, params[MASTER].high64 );
-
-
-    // TODO: the way we reduce results supports non-commutative
-    //       reducers only if we get the tree right!
-    //printf("going into wait\n");
-    /* wait on child nodes to finish work*/
-   /* for(int l=0; l<num_children; l++){
-       printf("thread master, child[%d]: %d\n", l, pp_tree[MASTER].child[l]);
-    }*/
-    for(int i=0; i<num_children; i++) {
-        pp_exec_wait(pp_tree[MASTER].child[i]);
-#if WITH_REDUCERS
-       if( hypermap_reducer ) {
-          // Reduce results from other thread
-          (*hypermap_reducer->__c_monoid.reduce_fn)(
-              (void*)&hypermap_reducer->__c_monoid,
-              HYPERMAP_GET(MASTER), HYPERMAP_GET(pp_tree[MASTER].child[i]) );
-          // Destroy other thread's view
-          (*hypermap_reducer->__c_monoid.destroy_fn)(
-              (void*)&hypermap_reducer->__c_monoid,
-              HYPERMAP_GET(pp_tree[MASTER].child[i]) );
-       }
-#endif
-    }
-    for (int j=1, nid=delta_socket; j<num_socket; nid+=delta_socket, j++){
-    //I will need to do the wait here as well.
-#if WITH_REDUCERS
-       if( hypermap_reducer ) {
-          // Reduce results from other thread
-          (*hypermap_reducer->__c_monoid.reduce_fn)(
-              (void*)&hypermap_reducer->__c_monoid,
-              HYPERMAP_GET(MASTER), HYPERMAP_GET(nid) );
-          // Destroy other thread's view
-          (*hypermap_reducer->__c_monoid.destroy_fn)(
-              (void*)&hypermap_reducer->__c_monoid, HYPERMAP_GET(nid) );
-       }
-#endif
-    }
-#if WITH_REDUCERS
-    // The master always uses the leftmost view.
-    // The master has thus applied all updates to the final view.
-    // Unset variables
-    hypermap_reducer = 0;
-    hypermap_views = 0;
-    hypermap_local_view = 0;
-#endif
-
-    // printf("CILK-STATIC SCHEDULER-OPTIMIZED- done\n" );
+    // Cleanup and unlink stack frame
+    __cilkrts_inline_pop_frame(&sf);
+    if( sf.flags )
+	__cilkrts_leave_frame(&sf);
 }
 
 // Use extern "C" to suppress name mangling of __cilkrts_cilk_for_32 and

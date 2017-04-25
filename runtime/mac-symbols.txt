@@ -30,6 +30,7 @@ ___cilkrts_get_tls_worker
 ___cilkrts_get_tls_worker_fast
 ___cilkrts_get_total_workers
 ___cilkrts_get_worker_number
+___cilkrts_record_event
 ___cilkrts_get_worker_rank
 ___cilkrts_global_state
 ___cilkrts_hyper_create
@@ -38,6 +39,7 @@ ___cilkrts_hyper_lookup
 ___cilkrts_hyperobject_alloc
 ___cilkrts_hyperobject_dealloc
 ___cilkrts_hyperobject_noop_destroy
+___cilkrts_obj_metadata_add_pending_to_ready_list
 ___cilkrts_init
 
 ___cilkrts_leave_frame

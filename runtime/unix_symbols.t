@@ -63,6 +63,7 @@ __cilkrts_get_tls_worker
 __cilkrts_get_tls_worker_fast
 __cilkrts_get_total_workers
 __cilkrts_get_worker_number
+__cilkrts_record_event
 __cilkrts_get_worker_rank
 __cilkrts_global_state
 __cilkrts_hyper_create
@@ -71,6 +72,7 @@ __cilkrts_hyper_lookup
 __cilkrts_hyperobject_alloc
 __cilkrts_hyperobject_dealloc
 __cilkrts_hyperobject_noop_destroy
+__cilkrts_obj_metadata_add_pending_to_ready_list
 __cilkrts_init
 __cilkrts_irml_version
 __cilkrts_leave_frame

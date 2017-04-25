@@ -180,7 +180,7 @@ void __cilkrts_obj_metadata_add_task(
     spin_mutex_unlock( &meta->mutex );
 }
 
-void __cilkrts_obj_metadata_add_pending_to_ready_list(
+CILK_ABI_VOID __cilkrts_obj_metadata_add_pending_to_ready_list(
     __cilkrts_worker *w, __cilkrts_pending_frame *pf) {
     __cilkrts_worker_lock(w);
     pf->next_ready_frame = 0;

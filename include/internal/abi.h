@@ -307,6 +307,11 @@ struct __cilkrts_pending_frame {
     void * args_tags;
 
     /**
+     * The team to which this pending frame belongs.
+     */
+    __cilkrts_worker *team;
+
+    /**
      * Number of remaining dependences that need to be resolved before
      * the frame becomes ready for execution.
      */
@@ -318,8 +323,8 @@ struct __cilkrts_pending_frame {
      * When stealing work, worker threads need to ascertain that they
      * are executing in an appropriate NUMA domain.
      */
-    // uint32_t numa_low;
-    // uint32_t numa_high;
+    uint32_t numa_low;
+    uint32_t numa_high;
 };
 
 

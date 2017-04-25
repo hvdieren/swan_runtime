@@ -221,6 +221,11 @@ CILK_API(int) __cilkrts_get_total_workers(void);
  */
 CILK_API(int) __cilkrts_get_worker_number(void);
 
+/** tracing
+ */
+CILK_API(void)
+    __cilkrts_record_event(const char *e, intptr_t a, intptr_t b);
+
 /** Tests whether "force reduce" behavior is enabled.
  *
  *  @return Non-zero if force-reduce mode is on, zero if it is off.

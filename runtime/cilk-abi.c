@@ -76,6 +76,7 @@
 #include "except.h"
 #include "cilk_malloc.h"
 #include "record-replay.h"
+#include "tracing.h"
 
 #include <errno.h>
 #include <string.h>
@@ -97,7 +98,6 @@ void * _ReturnAddress(void);
 #include "reducer_impl.h"
 #include "cilk-ittnotify.h"
 #include "cilk-tbb-interop.h"
-int cilk_rt_up=0;
 #define TBB_INTEROP_DATA_DELAYED_UNTIL_BIND (void *)-1
 
 /**
@@ -141,6 +141,8 @@ void enter_frame_internal(__cilkrts_stack_frame *sf, uint32_t version)
 
     //DBGPRINTF
     // printf("%d-%p enter_frame_internal - sf %p, parent: %p args_tags: %p\n", w->self, w, sf, sf->call_parent, sf->args_tags); /*    */
+
+    // TRACER_RECORD2(w,"enter_frame",sf,version);
 }
 
 CILK_ABI_VOID __cilkrts_enter_frame(__cilkrts_stack_frame *sf)
@@ -225,6 +227,8 @@ CILK_ABI_PENDING_PTR __cilkrts_pending_frame_create(size_t args_tags_size) {
     pf->frame_ff = ff;
 
     pf->args_tags = (void *)(((char *)pf)+pf_size);
+
+    pf->numa_low = pf->numa_high = 0; // NUMA-aware scheduling disabled
 
     /*    printf("     __cilkrts_pending_frame_create - pf %p at=%p\n", pf, pf->args_tags); */
 
@@ -388,6 +392,8 @@ CILK_ABI_VOID __cilkrts_leave_frame(__cilkrts_stack_frame *sf)
 			     & ~CILK_FRAME_NUMA, 0))
             __cilkrts_bug("W%u: frame won undo-detach race with flags %02x\n",
                           w->self, sf->flags);
+
+	// TRACER_RECORD1(w,"leave_frame_attached",sf);
 
         return;
     }
@@ -560,7 +566,6 @@ CILK_ABI_WORKER_PTR BIND_THREAD_RTN(void)
 
     /* 1: Initialize and start the Cilk runtime */
     __cilkrts_init_internal(1);
-    cilk_rt_up=1;
     /*
      * 2: Choose a worker for this thread (fail if none left).  The table of
      *    user workers is protected by the global OS mutex lock.
@@ -924,6 +929,7 @@ __cilkrts_save_fp_ctrl_state(__cilkrts_stack_frame *sf)
 CILK_ABI(int32_t)
 __cilkrts_get_worker_numa(__cilkrts_worker *w)
 {
+#if 0
     // FIXME: numa_node_of_cpu() does I/O on /proc. Avoid repeated use of
     //        that by caching the information.
 #if defined(__APPLE__)
@@ -942,6 +948,9 @@ __cilkrts_get_worker_numa(__cilkrts_worker *w)
     }
     // printf( "NUMA? w=%d cpu=%d node=%d\n", w->self, cpu, node );
     return node;
+#endif
+#else
+    return w->l->numa_node; // Cached. Assume thread is pinned.
 #endif
 }
 
